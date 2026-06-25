@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>My Fit Gym Rodeo - Sistema de Ventas</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined" rel="stylesheet" />
+  
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/canvas-confetti@1.5.1/dist/confetti.browser.min.js"></script>
+
+  <style>
+    /* Estilo para las fuentes de Material Design */
+    .material-symbols-outlined {
+      font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+    }
+  </style>
+</head>
+<body class="bg-[#FDF8F8] text-[#121212] font-sans min-h-screen flex flex-col md:flex-row">
+
+  <aside id="sidebar" class="fixed inset-y-0 left-0 z-40 w-[calc(100%-1rem)] max-w-[20rem] md:w-72 bg-[#121212] text-white flex flex-col justify-between p-4 md:min-h-screen shrink-0 border-b border-zinc-800 md:border-b-0 md:border-r md:static md:translate-x-0 transform -translate-x-full transition-transform duration-300 ease-in-out shadow-2xl md:shadow-none">
+    <div class="flex items-center justify-between w-full gap-3">
+      <div class="flex items-center gap-3 px-3 py-4 rounded-3xl bg-zinc-900/90 md:bg-transparent">
+        <span class="material-symbols-outlined text-[#D32F2F] text-3xl">fitness_center</span>
+        <h1 class="font-bold text-lg tracking-wide text-zinc-100">My Fit Gym Rodeo</h1>
+      </div>
+      <button id="btn-close-sidebar" class="md:hidden inline-flex items-center justify-center rounded-3xl bg-zinc-900/90 p-3 text-zinc-200 hover:bg-zinc-800 transition" aria-label="Cerrar navegación">
+        <span class="material-symbols-outlined">close</span>
+      </button>
+    </div>
+
+    <nav class="grid grid-cols-1 gap-3 mt-4 w-full">
+      <div class="space-y-2">
+        <p class="text-[10px] text-zinc-500 font-bold tracking-wider px-4 mb-1 uppercase">Operación</p>
+        <button id="btn-principal" class="w-full flex items-center gap-3 px-4 py-4 rounded-2xl transition bg-[#D32F2F] text-white font-medium shadow-lg shadow-red-900/10 text-left text-sm">
+          <span class="material-symbols-outlined">dashboard</span><span>Panel Principal</span>
+        </button>
+        <button id="btn-membresias" class="w-full flex items-center gap-3 px-4 py-4 rounded-2xl transition text-zinc-400 hover:bg-zinc-900 hover:text-white font-medium text-left text-sm">
+          <span class="material-symbols-outlined">card_membership</span><span>Membresías</span>
+        </button>
+        <button id="btn-dinamicas" class="w-full flex items-center gap-3 px-4 py-4 rounded-2xl transition text-zinc-400 hover:bg-zinc-900 hover:text-white font-medium text-left text-sm">
+          <span class="material-symbols-outlined">auto_awesome_motion</span><span>Dinámicas</span>
+        </button>
+      </div>
+      <div class="space-y-2 col-span-2 md:col-span-1">
+        <p class="text-[10px] text-zinc-500 font-bold tracking-wider px-4 mb-1 uppercase">Administración</p>
+        <button id="btn-estadisticas" class="w-full flex items-center gap-3 px-4 py-4 rounded-2xl transition text-zinc-400 hover:bg-zinc-900 hover:text-white font-medium text-left text-sm">
+          <span class="material-symbols-outlined">monitoring</span><span>Estadísticas</span>
+        </button>
+        <button id="btn-roles" class="w-full flex items-center gap-3 px-4 py-4 rounded-2xl transition text-zinc-400 hover:bg-zinc-900 hover:text-white font-medium text-left text-sm">
+          <span class="material-symbols-outlined">inventory_2</span><span>Productos</span>
+        </button>
+        <button id="btn-seguridad" class="w-full flex items-center gap-3 px-4 py-4 rounded-2xl transition text-zinc-400 hover:bg-zinc-900 hover:text-white font-medium text-left text-sm">
+          <span class="material-symbols-outlined">lock</span><span>Seguridad</span>
+        </button>
+      </div>
+    </nav>
+
+    <div class="flex items-center gap-3 p-3 bg-zinc-900 rounded-3xl mt-4 lg:mt-auto w-full">
+      <span class="material-symbols-outlined text-zinc-400 text-3xl">account_circle</span>
+      <div class="overflow-hidden">
+        <p class="text-sm font-medium text-zinc-200 truncate" id="usuario-nombre">Cargando...</p>
+        <p class="text-xs text-zinc-500 capitalize" id="usuario-rol">Iniciando...</p>
+      </div>
+    </div>
+  </aside>
+  <div id="sidebar-backdrop" class="hidden fixed inset-0 bg-black/50 backdrop-blur-sm z-30 md:hidden"></div>
+  <button id="btn-toggle-sidebar" type="button" class="md:hidden fixed top-4 left-4 z-30 inline-flex items-center justify-center w-11 h-11 rounded-full bg-white text-zinc-700 border border-zinc-200 shadow-sm hover:bg-zinc-50 transition focus:outline-none focus:ring-2 focus:ring-red-500/30" aria-expanded="false">
+    <span class="material-symbols-outlined text-2xl">menu</span>
+  </button>
+
+  <main class="flex-1 p-4 lg:p-8 overflow-y-auto h-full pb-28 md:pb-0">
+    <div id="offline-banner" class="hidden fixed top-20 left-1/2 z-40 -translate-x-1/2 w-[min(92vw,28rem)] rounded-3xl bg-amber-500/95 text-zinc-950 border border-amber-600 px-4 py-3 text-sm shadow-xl backdrop-blur-sm text-center"></div>
+    <div id="contenedor-pantallas" class="max-w-7xl mx-auto px-0 lg:px-4">
+      <h2 class="text-2xl font-bold text-zinc-800">Cargando sistema...</h2>
+    </div>
+  </main>
+
+  <div id="modal-acceso-admin" class="hidden fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+    <div class="bg-white rounded-3xl p-6 w-full max-w-md space-y-4 shadow-2xl">
+      <div class="flex items-center justify-between">
+        <div>
+          <h3 class="text-xl font-black text-zinc-900">Acceso Administrativo</h3>
+          <p class="text-xs text-zinc-500">Ingresa la contraseña para acceder a Estadísticas, Productos o Seguridad.</p>
+        </div>
+        <button id="admin-password-close" type="button" class="text-zinc-400 hover:text-zinc-800 text-lg font-bold">✕</button>
+      </div>
+      <input id="admin-password-input" type="password" placeholder="Contraseña Maestra" class="w-full border border-zinc-200 rounded-3xl px-4 py-3 text-sm outline-none focus:ring-2 focus:ring-red-500/20 focus:border-[#D32F2F] transition-all" />
+      <p id="admin-password-error" class="text-xs text-red-500 hidden font-semibold">❌ Contraseña incorrecta. Intenta de nuevo o solicita recuperación.</p>
+      <button id="admin-password-forgot" type="button" class="w-full py-3 rounded-3xl bg-zinc-100 text-zinc-900 font-bold hover:bg-zinc-200 transition-colors">Olvidé mi contraseña</button>
+      <div class="flex gap-3">
+        <button id="admin-password-cancel" type="button" class="flex-1 py-3 rounded-3xl bg-zinc-200 text-zinc-900 font-bold hover:bg-zinc-300 transition-colors">Cancelar</button>
+        <button id="admin-password-submit" type="button" class="flex-1 py-3 rounded-3xl bg-[#D32F2F] text-white font-bold hover:bg-red-700 transition-colors shadow-md">Entrar</button>
+      </div>
+    </div>
+  </div>
+
+  <script type="module" src="/src/main.js"></script>
+</body>
+</html>
