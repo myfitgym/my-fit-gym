@@ -1,29 +1,28 @@
 // Importamos la base de datos desde tu archivo de configuración
 import { db } from './firebase.js';
-import { collection, addDoc, serverTimestamp, onSnapshot, query, where, doc, setDoc, getDoc, deleteDoc } from 'firebase/firestore';
+import { collection, addDoc, serverTimestamp, onSnapshot, query, where, doc, setDoc, getDoc, deleteDoc, updateDoc } from 'firebase/firestore';
+import './admin.js';
 
 // Referencias DOM (Barra Lateral de index.html)
 const contenedorPantallas = document.getElementById('contenedor-pantallas');
+const pantallaCalculadoraLibre = document.getElementById('pantalla-calculadora-libre');
+const calcDisplay = document.getElementById('calc-display');
 const sidebar = document.getElementById('sidebar');
 const sidebarBackdrop = document.getElementById('sidebar-backdrop');
 const btnToggleSidebar = document.getElementById('btn-toggle-sidebar');
 const btnPrincipal = document.getElementById('btn-principal');
 const btnMembresias = document.getElementById('btn-membresias');
 const btnDinamicas = document.getElementById('btn-dinamicas');
+const btnCalculadoraLibre = document.getElementById('btn-calculadora-libre');
 const btnEstadisticas = document.getElementById('btn-estadisticas');
-const btnRoles = document.getElementById('btn-roles'); // Productos
+const btnRoles = document.getElementById('btn-roles'); // Productos / Inventario
 const btnSeguridad = document.getElementById('btn-seguridad'); // Seguridad
 const offlineBanner = document.getElementById('offline-banner');
 
-// Catálogo de Productos para Venta Rápida
-const productosVentaRapida = [
-  { id: '1', nombre: 'Botella de Agua', precio: 15, icono: 'local_drink' },
-  { id: '2', nombre: 'Refill de Agua', precio: 5, icono: 'autorenew' },
-  { id: '3', nombre: 'Monster Energy', precio: 45, icono: 'bolt' },
-  { id: '4', nombre: 'Amper', precio: 20, icono: 'flash_on' },
-  { id: '5', nombre: 'Snack Barra', precio: 25, icono: 'cookie' },
-  { id: '6', nombre: 'Visita Gym', precio: 50, icono: 'sports_gymnastics' }
-];
+// ESTADO GLOBAL EN MEMORIA (Sincronizado en Tiempo Real con Firebase)
+let productosVentaRapida = []; 
+let serviciosVentaRapida = [];
+let carrito = []; // Carrito acumulativo solicitado por el coach
 
 const preciosMembresias = {
   semana: 150,
@@ -40,54 +39,33 @@ let configuracionRuleta = [
 ];
 
 const listaEmojisDisponibles = ["💪", "🔥", "⚡", "🍫", "🏆", "🥤", "🍏", "🏋️‍♂️", "🥊", "🎟️", "💰", "✨"];
-const iconosGymSeleccion = [
-  { valor: '🥤', etiqueta: 'Batido' },
-  { valor: '🍶', etiqueta: 'Botella' },
-  { valor: '🍫', etiqueta: 'Snack' },
-  { valor: '🍪', etiqueta: 'Barra' },
-  { valor: '🍏', etiqueta: 'Snack Saludable' },
-  { valor: '💊', etiqueta: 'Creatina' },
-  { valor: '🥛', etiqueta: 'Proteína' },
-  { valor: '⚡', etiqueta: 'Preentreno' },
-  { valor: '👕', etiqueta: 'Camiseta' },
-  { valor: '👖', etiqueta: 'Pantalón' },
-  { valor: '🎒', etiqueta: 'Bolsa' },
-  { valor: '🩳', etiqueta: 'Short' },
-  { valor: '🧢', etiqueta: 'Gorra' },
-  { valor: '🏋️‍♂️', etiqueta: 'Gym' },
-  { valor: '🛍️', etiqueta: 'Merch' }
-];
 const coloresGymVibrantes = ["#FF0000", "#111111", "#B80000", "#2A2A30", "#52525b", "#990000", "#7f1d1d"];
 const esEmoji = (texto) => typeof texto === 'string' && /\p{Extended_Pictographic}/u.test(texto);
 
 let desuscribirVentas = null;
 let desuscribirClientes = null;
-let desuscribirDashboard = null;
-let pendingAdminAccess = null;
-
-// Estado del segmentador en Estadísticas
-let filtroTemporalActual = 'mes'; 
-
-// Caché Local de Seguridad para credenciales
-let datosSeguridadLocal = null;
-let accesoConcedidoAdmin = false;
-
-// Instancias de gráficas para evitar duplicados en memoria
-let chartLineaAdmin = null;
-let chartDonaAdmin = null;
+let desuscribirHistorialMesa = null;
 
 // Sincronización de credenciales administrativas desde Firebase
+let datosSeguridadLocal = null;
 const refSeguridadDB = doc(db, "configuracion", "credenciales");
 const refActividadDB = doc(db, "configuracion", "actividad");
 datosSeguridadLocal = { password: "Admin123", nacimiento: "2026-01-01" };
 onSnapshot(refSeguridadDB, (docSnap) => {
   if (docSnap.exists()) {
     datosSeguridadLocal = docSnap.data();
-  } else {
-    datosSeguridadLocal = { password: "Admin123", nacimiento: "2026-01-01" };
   }
-}, () => {
-  datosSeguridadLocal = { password: "Admin123", nacimiento: "2026-01-01" };
+});
+
+// ESCUCHADOR EN TIEMPO REAL: Productos e Inventario (Sincronización en Vivo)
+onSnapshot(collection(db, "productos"), (snapshot) => {
+  productosVentaRapida = [];
+  snapshot.forEach((docSnap) => {
+    productosVentaRapida.push({ id: docSnap.id, ...docSnap.data() });
+  });
+  if (document.getElementById('grid-productos-pos')) {
+    renderizarBotonesPOS();
+  }
 });
 
 async function marcarActividadDB() {
@@ -101,83 +79,14 @@ async function marcarActividadDB() {
 function apagarEscuchasActivos() {
   if (desuscribirVentas) { desuscribirVentas(); desuscribirVentas = null; }
   if (desuscribirClientes) { desuscribirClientes(); desuscribirClientes = null; }
-  if (desuscribirDashboard) { desuscribirDashboard(); desuscribirDashboard = null; }
+  if (desuscribirHistorialMesa) { desuscribirHistorialMesa(); desuscribirHistorialMesa = null; }
+  if (pantallaCalculadoraLibre) pantallaCalculadoraLibre.classList.add('hidden');
+  contenedorPantallas.classList.remove('hidden');
 }
 
 // Inicialización de textos del perfil por defecto
 document.getElementById('usuario-nombre').textContent = "Operador Rodeo";
 document.getElementById('usuario-rol').textContent = "Mostrador";
-
-const adminModal = document.getElementById('modal-acceso-admin');
-const adminPasswordInput = document.getElementById('admin-password-input');
-const adminPasswordSubmit = document.getElementById('admin-password-submit');
-const adminPasswordForgot = document.getElementById('admin-password-forgot');
-const adminPasswordCancel = document.getElementById('admin-password-cancel');
-const adminPasswordClose = document.getElementById('admin-password-close');
-const adminPasswordError = document.getElementById('admin-password-error');
-
-function abrirModalAdmin(funcionDestino, botonActivar) {
-  if (!adminModal) {
-    validarAccesoAdmin = (funcionDestino, botonActivar) => {
-      const clave = datosSeguridadLocal ? datosSeguridadLocal.password : "Admin123";
-      const pin = prompt("🔒 Módulo Gerencial. Ingrese contraseña de Administrador:");
-      if (pin === clave) {
-        accesoConcedidoAdmin = true; activarBoton(botonActivar); funcionDestino();
-      } else if (pin !== null) {
-        mostrarSnackbarMensaje('Acceso denegado.', 'error', 3000);
-      }
-    };
-    return;
-  }
-  pendingAdminAccess = { funcionDestino, botonActivar };
-  adminPasswordInput.value = "";
-  adminPasswordError.classList.add('hidden');
-  adminModal.classList.remove('hidden');
-  adminPasswordInput.focus();
-}
-
-function cerrarModalAdmin() {
-  if (!adminModal) return;
-  adminModal.classList.add('hidden');
-  adminPasswordError.classList.add('hidden');
-  pendingAdminAccess = null;
-}
-
-function autorizarAccesoAdmin() {
-  if (!adminPasswordInput) return;
-  const clave = datosSeguridadLocal ? datosSeguridadLocal.password : "rodeo2026";
-  const pin = adminPasswordInput.value.trim();
-  if (pin === clave) {
-    accesoConcedidoAdmin = true;
-    adminPasswordError.classList.add('hidden');
-    if (pendingAdminAccess) {
-      activarBoton(pendingAdminAccess.botonActivar);
-      pendingAdminAccess.funcionDestino();
-    }
-    cerrarModalAdmin();
-  } else {
-    adminPasswordError.textContent = '❌ Contraseña incorrecta. Intenta de nuevo o usa recuperación.';
-    adminPasswordError.classList.remove('hidden');
-  }
-}
-
-function recuperarPorNacimiento() {
-  const nacimientoRegistrado = datosSeguridadLocal && datosSeguridadLocal.nacimiento ? datosSeguridadLocal.nacimiento : "2026-01-01";
-  const respuesta = prompt("🔐 Recuperación de contraseña. Ingresa tu fecha de nacimiento registrada (AAAA-MM-DD):");
-  if (respuesta === null) return;
-  if (respuesta.trim() === nacimientoRegistrado) {
-    accesoConcedidoAdmin = true;
-    adminPasswordError.classList.add('hidden');
-    if (pendingAdminAccess) {
-      activarBoton(pendingAdminAccess.botonActivar);
-      pendingAdminAccess.funcionDestino();
-    }
-    cerrarModalAdmin();
-  } else {
-    adminPasswordError.textContent = '❌ Fecha de nacimiento incorrecta. Intenta nuevamente.';
-    adminPasswordError.classList.remove('hidden');
-  }
-}
 
 const isDesktopViewport = () => window.innerWidth >= 768;
 const actualizarBotonSidebar = (abierto) => {
@@ -213,15 +122,11 @@ const actualizarEstadoConexion = () => {
   const offline = !navigator.onLine;
   if (offline) {
     if (offlineBanner) {
-      offlineBanner.textContent = 'No tienes conexión a internet. La app sigue funcionando y los cambios se guardan localmente hasta reconectar.';
+      offlineBanner.textContent = 'Modo offline activado. Los datos se guardan localmente.';
       offlineBanner.classList.remove('hidden');
     }
-    mostrarSnackbarMensaje('Sin internet: trabajando en modo offline. Los datos se guardan localmente.', 'info', 5000);
   } else {
-    if (offlineBanner) {
-      offlineBanner.classList.add('hidden');
-    }
-    mostrarSnackbarMensaje('Conexión restablecida. Los datos locales se sincronizarán automáticamente.', 'success', 4200);
+    if (offlineBanner) offlineBanner.classList.add('hidden');
   }
 };
 if (btnToggleSidebar && sidebar) {
@@ -239,79 +144,151 @@ if (sidebarBackdrop) sidebarBackdrop.addEventListener('click', cerrarSidebarMobi
 window.addEventListener('resize', resetSidebarResponsive);
 window.addEventListener('online', actualizarEstadoConexion);
 window.addEventListener('offline', actualizarEstadoConexion);
-window.addEventListener('load', () => {
-  if (!isDesktopViewport()) {
-    cerrarSidebarMobile();
-  } else {
-    resetSidebarResponsive();
-  }
-  actualizarEstadoConexion();
-});
-if (adminPasswordClose) adminPasswordClose.onclick = cerrarModalAdmin;
-if (adminPasswordCancel) adminPasswordCancel.onclick = cerrarModalAdmin;
-if (adminPasswordSubmit) adminPasswordSubmit.onclick = autorizarAccesoAdmin;
-if (adminPasswordForgot) adminPasswordForgot.onclick = recuperarPorNacimiento;
-if (adminPasswordInput) {
-  adminPasswordInput.addEventListener('keydown', (event) => {
-    if (event.key === 'Enter') autorizarAccesoAdmin();
-  });
-}
 
 // =======================================================
-// PANTALLA 1: PANEL PRINCIPAL
+// PANTALLA 1: PANEL PRINCIPAL (CON HISTORIAL REPARADO)
 // =======================================================
 function cargarPantallaUnificada() {
   apagarEscuchasActivos();
   document.getElementById('usuario-nombre').textContent = "Operador Rodeo";
   document.getElementById('usuario-rol').textContent = "Mostrador";
 
-  let gridProductos = '';
-  productosVentaRapida.forEach(prod => {
-    const iconoClass = esEmoji(prod.icono) ? '' : 'material-symbols-outlined';
-    gridProductos += `
-      <button data-id="${prod.id}" class="btn-producto-click w-full min-h-[150px] flex flex-col items-center justify-center p-5 bg-white border border-zinc-200 rounded-3xl hover:border-[#D32F2F] transition-all transform active:scale-95 group shadow-sm">
-        <div class="w-14 h-14 bg-zinc-100 group-hover:bg-red-50 rounded-2xl flex items-center justify-center text-zinc-700 group-hover:text-[#D32F2F] transition mb-3">
-          <span class="${iconoClass} text-2xl">${prod.icono}</span>
-        </div>
-        <span class="font-bold text-zinc-800 text-xs tracking-tight text-center truncate w-full">${prod.nombre}</span>
-        <span class="mt-1 text-[11px] px-2.5 py-0.5 bg-zinc-900 text-white rounded-full font-bold">$${prod.precio}</span>
-      </button>
-    `;
-  });
-
   contenedorPantallas.innerHTML = `
-    <div class="space-y-6">
-      <div class="p-6 bg-white border border-zinc-200 rounded-3xl shadow-sm">
-        <p class="text-[10px] font-bold text-zinc-400 tracking-wider uppercase">Ganancias de Hoy</p>
-        <h3 class="text-4xl font-black text-zinc-900 mt-1" id="ganancias-hoy">$0.00</h3>
-        <p class="text-[11px] text-zinc-400 mt-3">Suma de productos y membresías hoy.</p>
+    <div class="grid grid-cols-1 lg:grid-cols-3 gap-6 items-start">
+      <div class="lg:col-span-2 space-y-6">
+        <div class="p-6 bg-white border border-zinc-200 rounded-3xl shadow-sm">
+          <p class="text-[10px] font-bold text-zinc-400 tracking-wider uppercase">Ganancias de Hoy</p>
+          <h3 class="text-4xl font-black text-zinc-900 mt-1" id="ganancias-hoy">$0.00</h3>
+        </div>
+        
+        <div class="space-y-4">
+          <div>
+            <h2 class="text-2xl font-black text-zinc-900 tracking-tight">Venta en un Clic</h2>
+            <p class="text-zinc-500 text-xs">Los productos se agregarán a la orden de cobro de la derecha.</p>
+          </div>
+          <div class="grid grid-cols-[repeat(auto-fit,minmax(140px,1fr))] gap-3 auto-rows-fr" id="grid-productos-pos">
+            </div>
+        </div>
+
+        <div class="p-5 bg-white border border-zinc-200 rounded-3xl space-y-3 shadow-sm">
+          <h3 class="font-black text-xs tracking-wider text-zinc-700 uppercase">Ventas del Día</h3>
+          <div class="overflow-x-auto max-h-[350px] overflow-y-auto">
+            <table class="w-full text-left text-xs">
+              <thead>
+                <tr class="text-zinc-400 border-b"><th class="pb-2">Hora</th><th class="pb-2">Venta</th><th class="pb-2 text-center">Método</th><th class="pb-2 text-right">Total</th><th class="pb-2 text-right">Eliminar</th></tr>
+              </thead>
+              <tbody id="historial-ventas-hoy-tabla"></tbody>
+            </table>
+          </div>
+        </div>
       </div>
-      <div class="space-y-4">
-        <div><h2 class="text-2xl font-black text-zinc-900 tracking-tight">Venta en un Clic</h2><p class="text-zinc-500 text-xs">Presiona cualquier producto para registrar el cobro inmediato.</p></div>
-        <div class="grid grid-cols-[repeat(auto-fit,minmax(180px,1fr))] gap-4 auto-rows-fr">${gridProductos}</div>
+
+      <div class="space-y-6">
+        <div class="p-5 bg-zinc-900 text-white border border-zinc-800 rounded-3xl space-y-4 shadow-xl">
+          <div class="flex items-center gap-2 text-red-500">
+            <span class="material-symbols-outlined font-bold">shopping_cart</span>
+            <h3 class="font-black text-xs tracking-wider uppercase text-zinc-100">Orden de Cobro</h3>
+          </div>
+          <div id="elementos-carrito" class="space-y-2 max-h-[180px] overflow-y-auto text-xs text-zinc-300">
+            </div>
+          <div class="border-t border-zinc-800 pt-3 flex justify-between items-center">
+            <span class="text-sm font-bold text-zinc-400">Total a pagar:</span>
+            <span class="text-2xl font-black text-emerald-400" id="total-carrito">$0.00</span>
+          </div>
+          
+          <div class="space-y-2">
+            <label class="block text-[10px] font-bold text-zinc-500 uppercase">Método de Pago</label>
+            <div class="grid grid-cols-2 gap-2">
+              <button id="pago-efectivo" class="py-2.5 rounded-xl font-bold text-xs bg-[#D32F2F] text-white border border-transparent transition-all">EFECTIVO</button>
+              <button id="pago-tarjeta" class="py-2.5 rounded-xl font-bold text-xs bg-zinc-800 text-zinc-400 border border-zinc-700 transition-all">TARJETA</button>
+            </div>
+          </div>
+
+          <div id="modulo-cambio" class="space-y-2 bg-zinc-950 p-3 rounded-2xl border border-zinc-800">
+            <label class="block text-[10px] font-bold text-zinc-500 uppercase">¿Con cuánto paga?</label>
+            <input type="number" id="monto-recibido" placeholder="0.00" class="w-full bg-zinc-900 border border-zinc-800 rounded-xl px-3 py-2 text-sm font-mono text-white outline-none focus:border-red-500" />
+            <div id="cambio-resultado" class="text-xs font-black text-emerald-400 pt-1">Cambio: $0.00</div>
+          </div>
+
+          <button id="btn-finalizar-compra" class="w-full py-3 bg-emerald-600 hover:bg-emerald-700 text-white font-black text-xs tracking-wider rounded-xl shadow-md transition-all uppercase">Confirmar y Registrar Venta</button>
+        </div>
+
         <div class="p-5 bg-[#FFF5F5] border border-red-100 rounded-3xl space-y-4 shadow-sm">
           <div class="flex items-center gap-2 text-[#D32F2F]"><span class="material-symbols-outlined font-bold text-xl">notifications_active</span><h3 class="font-black text-xs tracking-wider uppercase">Por Vencer (WhatsApp)</h3></div>
-          <div class="space-y-3 max-h-[520px] overflow-y-auto pr-1" id="lista-alertas-vencimiento"></div>
+          <div class="space-y-3 max-h-[220px] overflow-y-auto pr-1" id="lista-alertas-vencimiento"></div>
         </div>
       </div>
-    </div>
-    <div id="snackbar-container" class="fixed bottom-6 right-6 z-50 space-y-2 pointer-events-none"></div>
-  `;
+    </div>`
 
-  document.querySelectorAll('.btn-producto-click').forEach(button => {
-    button.addEventListener('click', async () => {
-      const id = button.getAttribute('data-id');
-      const producto = productosVentaRapida.find(p => p.id === id);
-      await registrarVentaExpress(producto);
-    });
-  });
+  renderizarBotonesPOS();
+  renderizarCarrito();
+  configurarEventosPago();
 
-  const inicioHoy = new Date(); inicioHoy.setHours(0, 0, 0, 0);
-  const qVentas = query(collection(db, "ventas"), where("fecha", ">=", inicioHoy));
+  const inicioHoy = new Date(); inicioHoy.setHours(0, 0, 0, 0, 0);
+  const finHoy = new Date(inicioHoy);
+  finHoy.setDate(finHoy.getDate() + 1);
+  const qVentas = query(collection(db, "ventas"), where("fecha", ">=", inicioHoy), where("fecha", "<", finHoy));
+  
   desuscribirVentas = onSnapshot(qVentas, (snapshot) => {
     const txtGanancias = document.getElementById('ganancias-hoy'); if (!txtGanancias) return;
-    let totalHoy = 0; snapshot.forEach((doc) => { totalHoy += doc.data().monto || 0; });
+    let totalHoy = 0; snapshot.forEach((doc) => { totalHoy += Number(doc.data().monto || 0); });
     txtGanancias.textContent = `$${totalHoy.toFixed(2)}`;
+  });
+
+  // REPARADO: Muestra correctamente el concepto textual sin romperse
+  desuscribirHistorialMesa = onSnapshot(qVentas, (snapshot) => {
+    const tabla = document.getElementById('historial-ventas-hoy-tabla'); if (!tabla) return;
+    let registros = [];
+    snapshot.forEach((d) => {
+      const data = d.data();
+      let f = data.fecha;
+      if (f && typeof f.toDate === 'function') {
+        f = f.toDate();
+      } else if (typeof f === 'string' || typeof f === 'number') {
+        f = new Date(f);
+      } else {
+        f = new Date();
+      }
+      registros.push({ id: d.id, ...data, fecha: f });
+    });
+    registros.sort((a,b) => b.fecha - a.fecha);
+
+    if (registros.length === 0) {
+      tabla.innerHTML = `<tr><td colspan="5" class="py-3 text-center text-zinc-400 italic">No hay ventas registradas hoy.</td></tr>`;
+      return;
+    }
+
+    tabla.innerHTML = registros.map(v => `
+      <tr class="border-b hover:bg-zinc-50">
+        <td class="py-2.5 font-mono text-[11px] text-zinc-500">${v.fecha.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</td>
+        <td class="py-2.5 font-bold text-zinc-800 truncate max-w-[280px]">${v.concepto || 'Venta Express'}</td>
+        <td class="py-2.5 text-center"><span class="px-2 py-0.5 rounded-full font-bold text-[9px] uppercase ${v.metodoPago === 'Tarjeta' || v.metodo === 'tarjeta' ? 'bg-blue-50 text-blue-700' : 'bg-amber-50 text-amber-700'}">${v.metodoPago || v.metodo || 'Efectivo'}</span></td>
+        <td class="py-2.5 text-right font-black text-zinc-900">$${Number(v.monto).toFixed(2)}</td>
+        <td class="py-2.5 text-right"><button type="button" data-id="${v.id}" class="btn-cancelar-historial px-3 py-1 rounded-xl bg-red-50 text-red-700 hover:bg-red-100 text-xs font-bold">Eliminar</button></td>
+      </tr>
+    `).join('');
+
+    tabla.querySelectorAll('.btn-cancelar-historial').forEach(btn => {
+      btn.onclick = async () => {
+        const ventaId = btn.getAttribute('data-id');
+        if (!(await mostrarConfirmacion("¿Deseas anular esta venta? Esto restablecerá el inventario si aplica."))) return;
+        try {
+          const ventaSnap = await getDoc(doc(db, "ventas", ventaId));
+          if (ventaSnap.exists() && ventaSnap.data().productosArr) {
+            for (const p of ventaSnap.data().productosArr) {
+              const prodRef = doc(db, "productos", p.id);
+              const pSnap = await getDoc(prodRef);
+              if (pSnap.exists() && pSnap.data().tipo !== 'servicio') {
+                await updateDoc(prodRef, { stock: Number(pSnap.data().stock || 0) + Number(p.cantidad) });
+              }
+            }
+          }
+          await deleteDoc(doc(db, "ventas", ventaId));
+          await marcarActividadDB();
+          mostrarSnackbarMensaje('Venta cancelada e inventario reajustado', 'info', 3000);
+        } catch (e) { console.error(e); }
+      };
+    });
   });
 
   const hoy = new Date(); const limiteVencimiento = new Date(); limiteVencimiento.setDate(hoy.getDate() + 3);
@@ -331,52 +308,195 @@ function cargarPantallaUnificada() {
   });
 }
 
-async function registrarVentaExpress(producto) {
-  try {
-    const docRef = await addDoc(collection(db, "ventas"), { tipo: producto.nombre === "Visita Gym" ? "membresia" : "producto", concepto: producto.nombre === "Visita Gym" ? `Visita Diaria: Mostrador` : producto.nombre, monto: producto.precio, fecha: serverTimestamp() });
-    await marcarActividadDB();
-    mostrarNotificacionDisenada(producto.nombre, producto.precio, docRef.id);
-  } catch (error) { console.error(error); }
+function obtenerItemsPos() {
+  const existenteIds = new Set(productosVentaRapida.map(p => p.id));
+  return [
+    ...productosVentaRapida,
+    ...serviciosVentaRapida.filter(servicio => !existenteIds.has(servicio.id))
+  ];
 }
 
-function mostrarNotificacionDisenada(nombre, precio, ventaId) {
-  const container = document.getElementById('snackbar-container'); if (!container) return;
-  const notificacion = document.createElement('div');
-  notificacion.className = "pointer-events-auto flex items-center justify-between gap-4 bg-[#121212] text-zinc-100 px-5 py-3.5 rounded-2xl shadow-xl border border-zinc-800 min-w-[320px]";
-  notificacion.innerHTML = `
-    <div class="flex items-center gap-2.5">
-      <span class="material-symbols-outlined text-[#D32F2F]">check_circle</span>
-      <div>
-        <p class="text-xs font-medium">Venta Registrada</p>
-        <p class="text-[11px] text-zinc-400">${nombre}</p>
-      </div>
-    </div>
-    <div class="flex items-center gap-3">
-      <span class="text-xs font-black bg-zinc-800 px-2 py-1 rounded-lg text-white">$${precio}</span>
-      <button class="cancel-venta text-xs text-red-400 bg-white/5 px-3 py-1 rounded-lg">Cancelar ↩️</button>
-    </div>
-  `;
-  container.appendChild(notificacion);
+function renderizarBotonesPOS() {
+  const grid = document.getElementById('grid-productos-pos'); if (!grid) return;
+  const listaItems = obtenerItemsPos();
+  grid.innerHTML = listaItems.map(prod => {
+    const iconoClass = esEmoji(prod.icono) ? '' : 'material-symbols-outlined';
+    const esServicio = prod.tipo === 'servicio';
+    const agotado = !esServicio && Number(prod.stock || 0) <= 0;
+    return `
+      <button data-id="${prod.id}" ${agotado ? 'disabled' : ''} class="btn-producto-pos w-full min-h-[140px] flex flex-col items-center justify-center p-4 bg-white border border-zinc-200 rounded-3xl hover:border-[#D32F2F] transition-all transform active:scale-95 group shadow-sm disabled:opacity-40 disabled:bg-zinc-100 disabled:border-zinc-200 disabled:pointer-events-none">
+        <div class="w-12 h-12 bg-zinc-100 group-hover:bg-red-50 rounded-2xl flex items-center justify-center text-zinc-700 group-hover:text-[#D32F2F] transition mb-2">
+          <span class="${iconoClass} text-xl">${prod.icono || 'box'}</span>
+        </div>
+        <span class="font-bold text-zinc-800 text-xs text-center truncate w-full">${prod.nombre}</span>
+        <span class="text-[10px] font-semibold ${agotado ? 'text-red-500 font-bold' : 'text-zinc-400'} mb-1.5">${esServicio ? 'Ilimitado 🎫' : `Stock: ${prod.stock ?? 0}`}</span>
+        <span class="text-[11px] px-2.5 py-0.5 bg-zinc-900 text-white rounded-full font-bold">$${prod.precio}</span>
+      </button>
+    `;
+  }).join('');
 
-  let removed = false;
-  const timer = setTimeout(() => { if (!removed) { notificacion.remove(); } }, 3500);
-
-  const btn = notificacion.querySelector('.cancel-venta');
-  btn.addEventListener('click', async () => {
-    if (removed) return;
-    removed = true;
-    clearTimeout(timer);
-    try {
-      await deleteDoc(doc(db, 'ventas', ventaId));
-    await marcarActividadDB();
-    } catch (err) { console.error('Error anulando venta:', err); }
-    notificacion.remove();
-    mostrarSnackbarMensaje('venta eliminada', 'info', 2800);
+  grid.querySelectorAll('.btn-producto-pos').forEach(btn => {
+    btn.onclick = () => {
+      const id = btn.getAttribute('data-id');
+      const producto = obtenerItemsPos().find(p => p.id === id);
+      agregarAlCarrito(producto);
+    };
   });
 }
 
+function agregarAlCarrito(producto) {
+  const existe = carrito.find(item => item.id === producto.id);
+  if (existe) {
+    if (producto.tipo !== 'servicio' && existe.cantidad >= Number(producto.stock || 0)) {
+      mostrarSnackbarMensaje('Alcanzaste el límite del stock disponible', 'error', 2500);
+      return;
+    }
+    existe.cantidad++;
+  } else {
+    carrito.push({ ...producto, cantidad: 1 });
+  }
+  renderizarCarrito();
+}
+
+function renderizarCarrito() {
+  const contenedor = document.getElementById('elementos-carrito');
+  const txtTotal = document.getElementById('total-carrito');
+  if (!contenedor || !txtTotal) return;
+
+  if (carrito.length === 0) {
+    contenedor.innerHTML = `<p class="text-center text-zinc-500 py-4 italic">Orden vacía. Presiona productos.</p>`;
+    txtTotal.textContent = "$0.00";
+    calcularCambioCalculadora(0);
+    return;
+  }
+
+  let total = 0;
+  contenedor.innerHTML = carrito.map((item, index) => {
+    const subtotal = item.precio * item.cantidad;
+    total += subtotal;
+    return `
+      <div class="flex items-center justify-between bg-zinc-950 p-2.5 rounded-xl border border-zinc-800">
+        <div class="overflow-hidden mr-2">
+          <p class="font-bold text-zinc-100 truncate">${item.nombre}</p>
+          <p class="text-[10px] text-zinc-500">$${item.precio} c/u x ${item.cantidad}</p>
+        </div>
+        <div class="flex items-center gap-2">
+          <span class="font-bold text-emerald-400">$${subtotal}</span>
+          <button data-index="${index}" class="btn-quitar-carrito w-6 h-6 flex items-center justify-center rounded-lg bg-zinc-800 text-red-400 hover:bg-zinc-700 font-bold">✕</button>
+        </div>
+      </div>
+    `;
+  }).join('');
+
+  txtTotal.textContent = `$${total.toFixed(2)}`;
+  calcularCambioCalculadora(total);
+
+  contenedor.querySelectorAll('.btn-quitar-carrito').forEach(btn => {
+    btn.onclick = () => {
+      const idx = Number(btn.getAttribute('data-index'));
+      carrito.splice(idx, 1);
+      renderizarCarrito();
+    };
+  });
+}
+
+let metodoPagoActual = "Efectivo";
+function configurarEventosPago() {
+  const btnEfectivo = document.getElementById('pago-efectivo');
+  const btnTarjeta = document.getElementById('pago-tarjeta');
+  const moduloCambio = document.getElementById('modulo-cambio');
+  const inputMonto = document.getElementById('monto-recibido');
+  const btnFinalizar = document.getElementById('btn-finalizar-compra');
+
+  if (!btnEfectivo || !btnTarjeta) return;
+
+  btnEfectivo.onclick = () => {
+    metodoPagoActual = "Efectivo";
+    btnEfectivo.className = "py-2.5 rounded-xl font-bold text-xs bg-[#D32F2F] text-white border border-transparent transition-all";
+    btnTarjeta.className = "py-2.5 rounded-xl font-bold text-xs bg-zinc-800 text-zinc-400 border border-zinc-700 transition-all";
+    moduloCambio.classList.remove('hidden');
+    const total = carrito.reduce((sum, i) => sum + (i.precio * i.cantidad), 0);
+    calcularCambioCalculadora(total);
+  };
+
+  btnTarjeta.onclick = () => {
+    metodoPagoActual = "Tarjeta";
+    btnTarjeta.className = "py-2.5 rounded-xl font-bold text-xs bg-blue-600 text-white border border-transparent transition-all";
+    btnEfectivo.className = "py-2.5 rounded-xl font-bold text-xs bg-zinc-800 text-zinc-400 border border-zinc-700 transition-all";
+    moduloCambio.classList.add('hidden');
+  };
+
+  inputMonto.oninput = () => {
+    const total = carrito.reduce((sum, i) => sum + (i.precio * i.cantidad), 0);
+    calcularCambioCalculadora(total);
+  };
+
+  btnFinalizar.onclick = async () => {
+    if (carrito.length === 0) {
+      mostrarSnackbarMensaje('El carrito está vacío.', 'error', 2500);
+      return;
+    }
+    const total = carrito.reduce((sum, i) => sum + (i.precio * i.cantidad), 0);
+    if (metodoPagoActual === "Efectivo" && !inputMonto.value.trim()) {
+      mostrarSnackbarMensaje('Ingresa el monto recibido antes de confirmar la venta en efectivo.', 'error', 2500);
+      return;
+    }
+    if (metodoPagoActual === "Efectivo" && Number(inputMonto.value) < total) {
+      mostrarSnackbarMensaje('El monto recibido es menor al total a pagar.', 'error', 2500);
+      return;
+    }
+
+    try {
+      const conceptoStr = carrito.map(i => `${i.cantidad}x ${i.nombre}`).join(', ');
+
+      await addDoc(collection(db, "ventas"), {
+        tipo: carrito.some(i => i.nombre.toLowerCase().includes('membresia')) ? 'membresia' : 'producto',
+        concepto: conceptoStr,
+        monto: total,
+        metodoPago: metodoPagoActual,
+        productosArr: carrito.map(i => ({ id: i.id, nombre: i.nombre, cantidad: i.cantidad })),
+        fecha: serverTimestamp()
+      });
+
+      for (const item of carrito) {
+        const prodRef = doc(db, "productos", item.id);
+        const snapshot = await getDoc(prodRef);
+        if (snapshot.exists() && snapshot.data().tipo !== 'servicio') {
+          const stockActual = Number(snapshot.data().stock || 0);
+          await updateDoc(prodRef, { stock: Math.max(0, stockActual - Number(item.cantidad)) });
+        }
+      }
+
+      await marcarActividadDB();
+      if (window.confetti) window.confetti({ particleCount: 80, spread: 50 });
+      mostrarSnackbarMensaje('Venta procesada e inventario actualizado', 'success', 3000);
+      
+      carrito = [];
+      inputMonto.value = "";
+      renderizarCarrito();
+    } catch (e) {
+      console.error(e);
+      mostrarSnackbarMensaje('Error al guardar venta en la nube', 'error', 3000);
+    }
+  };
+}
+
+function calcularCambioCalculadora(total) {
+  const inputMonto = document.getElementById('monto-recibido');
+  const divCambio = document.getElementById('cambio-resultado');
+  if (!divCambio || !inputMonto) return;
+
+  if (carrito.length === 0 || !inputMonto.value) {
+    divCambio.textContent = "Cambio: $0.00";
+    return;
+  }
+  const recibido = Number(inputMonto.value);
+  const cambio = recibido - total;
+  divCambio.textContent = cambio >= 0 ? `Cambio: $${cambio.toFixed(2)}` : `Faltan: $${Math.abs(cambio).toFixed(2)}`;
+}
+
 function mostrarSnackbarMensaje(texto, variante = 'info', duracion = 2800) {
-  const container = document.getElementById('snackbar-container'); if (!container) return;
+  const container = getSnackbarContainer(); if (!container) return;
   const wrap = document.createElement('div');
   wrap.className = 'pointer-events-auto flex items-center justify-between gap-4 px-4 py-2 rounded-2xl shadow-md min-w-[220px]';
   const paleta = {
@@ -386,13 +506,15 @@ function mostrarSnackbarMensaje(texto, variante = 'info', duracion = 2800) {
   };
   const p = paleta[variante] || paleta.info;
   wrap.innerHTML = `<div class="flex items-center gap-3"><span class="h-8 w-8 flex items-center justify-center rounded-full" style="background:${p.accent}33"> <span class="material-symbols-outlined text-white text-sm">info</span></span><div class="text-sm font-medium ${p.text}">${texto}</div></div>`;
-  wrap.style.background = variante === 'info' ? '#121212' : ''; // keep class backgrounds for others
-  if (variante === 'info') { wrap.classList.add('bg-[#121212]','text-zinc-100'); }
-  if (variante === 'success') { wrap.classList.add('bg-emerald-50','text-emerald-700'); }
-  if (variante === 'error') { wrap.classList.add('bg-red-50','text-red-700'); }
+  if (variante === 'info') wrap.classList.add('bg-[#121212]','text-zinc-100');
+  if (variante === 'success') wrap.classList.add('bg-emerald-50','text-emerald-700');
+  if (variante === 'error') wrap.classList.add('bg-red-50','text-red-700');
   container.appendChild(wrap);
   setTimeout(() => { wrap.remove(); }, duracion);
 }
+
+// Exponer la función de notificaciones para que otros módulos (admin.js) la usen
+window.mostrarSnackbarMensaje = mostrarSnackbarMensaje;
 
 function mostrarConfirmacion(texto) {
   return new Promise((resolve) => {
@@ -413,6 +535,63 @@ function mostrarConfirmacion(texto) {
   });
 }
 
+// Exponer confirmación personalizada
+window.mostrarConfirmacion = mostrarConfirmacion;
+
+// Sincronizar precios de servicios desde Firestore para que cambios en admin.js
+// (configuracion/preciosServicios) actualicen las membresías en pantalla.
+try {
+  const refPreciosServicios = doc(db, 'configuracion', 'preciosServicios');
+  onSnapshot(refPreciosServicios, (snap) => {
+    if (!snap.exists()) return;
+    const data = snap.data();
+    serviciosVentaRapida = [];
+    if (data.caminadora !== undefined) {
+      serviciosVentaRapida.push({
+        id: 'caminadora',
+        nombre: 'Caminadora',
+        precio: Number(data.caminadora),
+        tipo: 'servicio',
+        icono: data.caminadoraIcono || '🏃'
+      });
+    }
+    if (data.visita !== undefined) {
+      serviciosVentaRapida.push({
+        id: 'visita',
+        nombre: 'Visita',
+        precio: Number(data.visita),
+        tipo: 'servicio',
+        icono: data.visitaIcono || '🎟️'
+      });
+    }
+    if (data.membresia) {
+      preciosMembresias.mes = Number(data.membresia);
+      const btn = document.querySelector('#form-mes button[type="submit"]');
+      if (btn) btn.textContent = `COBRAR $${preciosMembresias.mes.toFixed(2)}`;
+    }
+    if (data.semana) {
+      preciosMembresias.semana = Number(data.semana);
+      const btn2 = document.querySelector('#form-semana button[type="submit"]');
+      if (btn2) btn2.textContent = `COBRAR $${preciosMembresias.semana.toFixed(2)}`;
+    }
+    if (document.getElementById('grid-productos-pos')) {
+      renderizarBotonesPOS();
+    }
+  });
+} catch (e) {
+  console.error('No se pudieron sincronizar precios de servicios', e);
+}
+
+function getSnackbarContainer() {
+  let container = document.getElementById('snackbar-container');
+  if (!container) {
+    container = document.createElement('div');
+    container.id = 'snackbar-container';
+    container.className = 'fixed bottom-6 right-6 z-50 space-y-2 pointer-events-none';
+    document.body.appendChild(container);
+  }
+  return container;
+}
 
 // =======================================================
 // PANTALLA 2: MEMBRESÍAS
@@ -490,10 +669,6 @@ function cargarPantallaMembresiasMaster() {
       const telefono = document.getElementById('sem-telefono').value.trim();
       const inicio = document.getElementById('sem-inicio').value;
       const vence = document.getElementById('sem-vence').value;
-      if (!nombre || !telefono || !inicio || !vence) {
-        mostrarSnackbarMensaje('Completa todos los campos para registrar la membresía.', 'error', 3200);
-        return;
-      }
       await registrarNuevaMembresia(nombre, telefono, 'semana', preciosMembresias.semana, inicio, vence);
       formSemana.reset();
     };
@@ -505,10 +680,6 @@ function cargarPantallaMembresiasMaster() {
       const telefono = document.getElementById('mes-telefono').value.trim();
       const inicio = document.getElementById('mes-inicio').value;
       const vence = document.getElementById('mes-vence').value;
-      if (!nombre || !telefono || !inicio || !vence) {
-        mostrarSnackbarMensaje('Completa todos los campos para registrar la membresía.', 'error', 3200);
-        return;
-      }
       await registrarNuevaMembresia(nombre, telefono, 'mes', preciosMembresias.mes, inicio, vence);
       formMes.reset();
     };
@@ -562,9 +733,10 @@ function cargarPantallaMembresiasMaster() {
         const ejecutarRenovacion = async (tipo, precio) => {
           const fNewVence = new Date(); fNewVence.setDate(fNewVence.getDate() + (tipo === 'semana' ? 7 : 30));
           await setDoc(doc(db, "clientes", dbId), { nombre, telefono, tipoMembresia: tipo, fechaVencimiento: fNewVence });
-          await addDoc(collection(db, "ventas"), { tipo: "membresia", concepto: `Renovación: ${nombre}`, monto: precio, fecha: serverTimestamp() });
+          await addDoc(collection(db, "ventas"), { tipo: "membresia", concepto: `Renovación ${tipo.toUpperCase()}: ${nombre}`, monto: precio, metodoPago: "Efectivo", fecha: serverTimestamp() });
           await marcarActividadDB();
           document.getElementById('modal-reincorporar').classList.add('hidden');
+          mostrarSnackbarMensaje('Membresía renovada', 'success', 2500);
         };
         document.getElementById('btn-renovar-semana').onclick = () => ejecutarRenovacion('semana', preciosMembresias.semana);
         document.getElementById('btn-renovar-mes').onclick = () => ejecutarRenovacion('mes', preciosMembresias.mes);
@@ -590,13 +762,12 @@ function cargarPantallaMembresiasMaster() {
   const registrarNuevaMembresia = async (nombre, tel, tipo, precio, fInicioInput, fVenceInput) => {
     try {
       await addDoc(collection(db, "clientes"), { nombre, telefono: "52" + tel, tipoMembresia: tipo, fechaVencimiento: new Date(fVenceInput + "T23:59:59") });
-      await addDoc(collection(db, "ventas"), { tipo: "membresia", concepto: `Inscripción ${tipo.toUpperCase()}: ${nombre}`, monto: precio, fecha: serverTimestamp() });
+      await addDoc(collection(db, "ventas"), { tipo: "membresia", concepto: `Inscripción ${tipo.toUpperCase()}: ${nombre}`, monto: precio, metodoPago: "Efectivo", fecha: serverTimestamp() });
       await marcarActividadDB();
       mostrarSnackbarMensaje('¡Guardado!', 'success', 2500);
     } catch (e) { console.error(e); }
   };
 }
-
 
 // =======================================================
 // PANTALLA 3: DINÁMICAS (RULETA)
@@ -616,8 +787,8 @@ function cargarPantallaDinamicas() {
       <div class="flex w-full max-w-[620px] flex-col items-center justify-center gap-6">
         <div class="relative w-[320px] h-[320px] md:w-[450px] md:h-[450px]">
           <div class="absolute -top-3 left-1/2 -translate-x-1/2 z-20 w-8 h-8 bg-zinc-900" style="clip-path: polygon(100% 0, 0 0, 50% 100%);"></div>
-          <canvas id="canvas-ruleta" width="600" height="600" class="w-full h-full rounded-full shadow-2xl border-8 border-zinc-900 bg-zinc-900"></canvas>
-          <button id="btn-girar" class="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-30 w-16 h-16 md:w-20 md:h-20 bg-zinc-900 border-4 border-white text-white rounded-full font-black text-xs md:text-sm tracking-wider shadow-xl">GIRAR</button>
+          <canvas id="canvas-ruleta" width="600" height="600" class="w-full h-full rounded-full shadow-2xl border-8 border-zinc-900 bg-zinc-900 transition-transform ease-out"></canvas>
+          <button id="btn-grid-girar" class="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-30 w-16 h-16 md:w-20 md:h-20 bg-zinc-900 border-4 border-white text-white rounded-full font-black text-xs md:text-sm tracking-wider shadow-xl">GIRAR</button>
         </div>
         <div id="resultado-premio" class="w-full max-w-xs text-center text-xl font-black text-[#D32F2F] uppercase tracking-widest opacity-0"></div>
       </div>
@@ -645,9 +816,6 @@ function cargarPantallaDinamicas() {
           <div class="overflow-hidden rounded-3xl border border-zinc-200 bg-zinc-50 p-4">
             <div id="config-ruleta-list" class="space-y-3"></div>
           </div>
-          <datalist id="emoji-options">
-            ${listaEmojisDisponibles.map((emoji) => `<option value="${emoji}"></option>`).join('')}
-          </datalist>
         </div>
       </div>
     </div>
@@ -697,20 +865,9 @@ function cargarPantallaDinamicas() {
   const totalDisplay = document.getElementById('config-ruleta-total');
   const warningTotal = document.getElementById('config-ruleta-warning');
 
-  const actualizarTotalConfiguracion = () => {
-    const total = configuracionRuleta.reduce((sum, item) => sum + Number(item.probabilidad || 0), 0);
-    totalDisplay.textContent = `${total}%`;
-    if (total !== 100) {
-      warningTotal.classList.remove('hidden');
-      totalDisplay.classList.add('text-red-600');
-      totalDisplay.classList.remove('text-zinc-900');
-    } else {
-      warningTotal.classList.add('hidden');
-      totalDisplay.classList.remove('text-red-600');
-      totalDisplay.classList.add('text-zinc-900');
-    }
-    return total;
-  };
+  const openConfigModal = () => { if (modal) modal.classList.remove('hidden'); renderConfigRuleta(); };
+  const closeConfigModal = () => { if (modal) modal.classList.add('hidden'); };
+  const actualizarTotalConfiguracion = () => { const total = configuracionRuleta.reduce((sum, item) => sum + Number(item.probabilidad || 0), 0); totalDisplay.textContent = `${total}%`; if (total !== 100) { warningTotal.classList.remove('hidden'); totalDisplay.classList.add('text-red-600'); } else { warningTotal.classList.add('hidden'); totalDisplay.classList.remove('text-red-600'); } return total; };
 
   const renderConfigRuleta = () => {
     if (!configList) return;
@@ -727,660 +884,101 @@ function cargarPantallaDinamicas() {
       btn.onclick = () => {
         const index = Number(btn.getAttribute('data-delete-index'));
         configuracionRuleta.splice(index, 1);
-        renderConfigRuleta();
-        actualizarTotalConfiguracion();
-        dibujarRuleta();
+        renderConfigRuleta(); actualizarTotalConfiguracion(); dibujarRuleta();
       };
     });
     configList.querySelectorAll('[data-field]').forEach((input) => {
       input.oninput = () => {
-        const field = input.getAttribute('data-field');
-        const index = Number(input.getAttribute('data-index'));
-        if (Number.isFinite(index) && configuracionRuleta[index]) {
-          configuracionRuleta[index][field] = field === 'probabilidad' ? Number(input.value) : input.value;
-          actualizarTotalConfiguracion();
-          dibujarRuleta();
-        }
+        const field = input.getAttribute('data-field'); const index = Number(input.getAttribute('data-index'));
+        if (Number.isFinite(index) && configuracionRuleta[index]) { configuracionRuleta[index][field] = field === 'probabilidad' ? Number(input.value) : input.value; actualizarTotalConfiguracion(); dibujarRuleta(); }
       };
     });
-    actualizarTotalConfiguracion();
-    dibujarRuleta();
-  };
-
-  const openConfigModal = () => {
-    if (modal) modal.classList.remove('hidden');
-    renderConfigRuleta();
-  };
-  const closeConfigModal = () => {
-    if (modal) modal.classList.add('hidden');
+    actualizarTotalConfiguracion(); dibujarRuleta();
   };
 
   if (btnConfigRuleta) btnConfigRuleta.onclick = openConfigModal;
   if (btnCloseConfig) btnCloseConfig.onclick = closeConfigModal;
-  const resetRuletaColors = () => {
-    configuracionRuleta.forEach((item, index) => {
-      item.color = coloresGymVibrantes[index % coloresGymVibrantes.length];
-    });
-    renderConfigRuleta();
-    dibujarRuleta();
-    mostrarSnackbarMensaje('Colores de la ruleta reiniciados.', 'success', 2600);
-  };
+  if (btnAddRuletaItem) btnAddRuletaItem.onclick = () => { configuracionRuleta.push({ premio: 'Nuevo premio', icono: '✨', color: coloresGymVibrantes[configuracionRuleta.length % coloresGymVibrantes.length], probabilidad: 0 }); renderConfigRuleta(); };
+  if (btnResetColors) btnResetColors.onclick = () => { configuracionRuleta.forEach((item, index) => { item.color = coloresGymVibrantes[index % coloresGymVibrantes.length]; }); renderConfigRuleta(); dibujarRuleta(); };
+  if (btnSaveConfig) btnSaveConfig.onclick = () => { const total = actualizarTotalConfiguracion(); if (total !== 100) { mostrarSnackbarMensaje('Debe sumar 100%.', 'error', 3000); return; } closeConfigModal(); mostrarSnackbarMensaje('Configuración guardada.', 'success', 2600); };
 
-  if (btnAddRuletaItem) btnAddRuletaItem.onclick = () => {
-    configuracionRuleta.push({ premio: 'Nuevo premio', icono: '✨', color: coloresGymVibrantes[configuracionRuleta.length % coloresGymVibrantes.length], probabilidad: 0 });
-    renderConfigRuleta();
-  };
-  if (btnResetColors) btnResetColors.onclick = resetRuletaColors;
-  if (btnSaveConfig) btnSaveConfig.onclick = () => {
-    const total = actualizarTotalConfiguracion();
-    if (total !== 100) {
-      mostrarSnackbarMensaje('La configuración de ruleta debe sumar exactamente 100%.', 'error', 3200);
-      return;
-    }
-    renderConfigRuleta();
-    dibujarRuleta();
-    closeConfigModal();
-    mostrarSnackbarMensaje('Configuración de ruleta guardada.', 'success', 2600);
-  };
-
-  let g = false;
-  let currentRotation = 0;
-  document.getElementById('btn-girar').onclick = () => {
+  let g = false; let currentRotation = 0;
+  document.getElementById('btn-grid-girar').onclick = () => {
     if (g) return; g = true; const txt = document.getElementById('resultado-premio'); txt.classList.add('opacity-0');
     const totalSum = configuracionRuleta.reduce((sum, item) => sum + Number(item.probabilidad || 0), 0);
-    if (totalSum !== 100) {
-      mostrarSnackbarMensaje('No se puede girar: la ruleta debe sumar 100%.', 'error', 3200);
-      g = false;
-      return;
-    }
-    let r = Math.random() * totalSum;
-    let acumulado = 0;
-    let iG = 0;
-    for (let i = 0; i < configuracionRuleta.length; i++) {
-      acumulado += Number(configuracionRuleta[i].probabilidad || 0);
-      if (r <= acumulado) {
-        iG = i;
-        break;
-      }
-    }
-    const calcularAnguloCentro = (index) => {
-      const segmentos = configuracionRuleta.length || 1;
-      const arco = 360 / segmentos;
-      return index * arco + arco / 2;
-    };
-    const anguloCentro = calcularAnguloCentro(iG);
-    const objetivoModulo = ((270 - anguloCentro) % 360 + 360) % 360;
-    const rotacionActualModulo = ((currentRotation % 360) + 360) % 360;
-    const delta = ((objetivoModulo - rotacionActualModulo + 360) % 360);
-    const rot = currentRotation + (6 * 360) + delta;
-    currentRotation = rot;
-    canvas.style.transition = "transform 4.5s cubic-bezier(0.15, 0.85, 0.15, 1)";
-    canvas.style.transform = `rotate(${rot}deg)`;
-    setTimeout(() => {
-      g = false;
-      canvas.style.transition = "none";
-      txt.innerHTML = `🎁 GANASTE: ${configuracionRuleta[iG].premio}`;
-      txt.classList.remove('opacity-0');
-      if (window.confetti) window.confetti({ particleCount: 140, spread: 80, origin: { y: 0.6 } });
-    }, 4500);
+    if (totalSum !== 100) { mostrarSnackbarMensaje('Debe sumar 100% para poder girar.', 'error', 3000); g = false; return; }
+    let r = Math.random() * totalSum; let acumulado = 0; let iG = 0;
+    for (let i = 0; i < configuracionRuleta.length; i++) { acumulado += Number(configuracionRuleta[i].probabilidad || 0); if (r <= acumulado) { iG = i; break; } }
+    const anguloCentro = (iG * (360 / configuracionRuleta.length)) + ((360 / configuracionRuleta.length) / 2);
+    const objetivoModulo = ((270 - anguloCentro) % 360 + 360) % 360; const delta = ((objetivoModulo - (currentRotation % 360) + 360) % 360);
+    currentRotation += (6 * 360) + delta; canvas.style.transition = "transform 4.5s cubic-bezier(0.15, 0.85, 0.15, 1)"; canvas.style.transform = `rotate(${currentRotation}deg)`;
+    setTimeout(() => { g = false; txt.innerHTML = `🎁 GANASTE: ${configuracionRuleta[iG].premio}`; txt.classList.remove('opacity-0'); if (window.confetti) window.confetti({ particleCount: 140, spread: 80 }); }, 4500);
   };
 }
-
 
 // =======================================================
-// ZONA ADMINISTRATIVA PROTEGIDA POR CONTRASEÑA
+// PANTALLA: CALCULADORA BÁSICA EXTRA GENERAL
 // =======================================================
-function validarAccesoAdmin(funcionDestino, botonActivar) {
-  if (accesoConcedidoAdmin) {
-    activarBoton(botonActivar); funcionDestino(); return;
-  }
-  abrirModalAdmin(funcionDestino, botonActivar);
-}
-
-function cargarPantallaEstadisticas() {
-  if (desuscribirDashboard) { desuscribirDashboard(); desuscribirDashboard = null; }
-  document.getElementById('usuario-nombre').textContent = "Dueño Rodeo";
-  document.getElementById('usuario-rol').textContent = "Administrador";
-
-  contenedorPantallas.innerHTML = `
-    <div class="space-y-6 pb-8">
-      <div class="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
-        <div><h2 class="text-2xl font-black">Estadisticas de My Fit Gym</h2><p class="text-zinc-500 text-xs">Inteligencia de caja calculada desde Firestore.</p></div>
-        <div class="inline-flex p-1 bg-zinc-100 rounded-2xl border text-xs font-bold">
-          <button id="slicer-hoy" class="px-3 py-1.5 rounded-xl transition-all">HOY</button>
-          <button id="slicer-semana" class="px-3 py-1.5 rounded-xl transition-all">SEMANA</button>
-          <button id="slicer-mes" class="px-3 py-1.5 rounded-xl transition-all">MES</button>
-          <button id="slicer-anio" class="px-3 py-1.5 rounded-xl transition-all">AÑO</button>
-        </div>
-      </div>
-      <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 text-center">
-        <div class="p-5 bg-white border rounded-3xl shadow-sm"><p class="text-[10px] font-bold text-zinc-400 uppercase">Facturación Total</p><h3 class="text-2xl font-black mt-1" id="kpi-ingreso-mes">$0.00</h3></div>
-        <div class="p-5 bg-white border rounded-3xl shadow-sm"><p class="text-[10px] font-bold text-zinc-400 uppercase">Miembros Activos</p><h3 class="text-2xl font-black mt-1" id="kpi-miembros-activos">0</h3></div>
-        <div class="p-5 bg-white border rounded-3xl shadow-sm"><p class="text-[10px] font-bold text-zinc-400 uppercase">Suplementos</p><h3 class="text-2xl font-black mt-1" id="kpi-productos-monto">$0.00</h3></div>
-        <div class="p-5 bg-white border rounded-3xl shadow-sm"><p class="text-[10px] font-bold text-zinc-400 uppercase">Ticket Promedio</p><h3 class="text-2xl font-black mt-1" id="kpi-ticket-promedio">$0.00</h3></div>
-      </div>
-      <div class="grid grid-cols-1 lg:grid-cols-3 gap-4">
-        <div class="lg:col-span-2 p-5 bg-white border rounded-3xl h-[280px] relative overflow-hidden">
-          <div id="loader-linea" class="absolute inset-0 z-10 grid place-items-center bg-white/80 text-sm font-semibold text-zinc-600">
-            <div class="inline-flex items-center gap-2 rounded-full bg-white/90 px-4 py-2 shadow-sm">
-              <span class="h-3 w-3 animate-spin rounded-full border-2 border-red-500 border-t-transparent"></span>
-              Generando métricas...
-            </div>
-          </div>
-          <canvas id="chart-linea-ingresos" class="h-full w-full"></canvas>
-        </div>
-        <div class="p-5 bg-white border rounded-3xl h-[280px] relative overflow-hidden">
-          <div id="loader-dona" class="absolute inset-0 z-10 grid place-items-center bg-white/80 text-sm font-semibold text-zinc-600">
-            <div class="inline-flex items-center gap-2 rounded-full bg-white/90 px-4 py-2 shadow-sm">
-              <span class="h-3 w-3 animate-spin rounded-full border-2 border-red-500 border-t-transparent"></span>
-              Generando métricas...
-            </div>
-          </div>
-          <canvas id="chart-dona-mix" class="h-full w-full"></canvas>
-        </div>
-      </div>
-      <div class="bg-white border rounded-3xl p-4 shadow-sm">
-        <h3 class="text-sm font-bold text-zinc-900 uppercase mb-3">Últimas 5 operaciones</h3>
-        <div class="overflow-x-auto">
-          <table class="w-full text-left text-xs">
-            <thead class="text-zinc-500 uppercase border-b border-zinc-200">
-                <tr>
-                  <th class="py-3 pr-3">Fecha</th>
-                  <th class="py-3 pr-3">Concepto</th>
-                  <th class="py-3 pr-3">Tipo</th>
-                  <th class="py-3 pr-3 text-right">Monto</th>
-                  <th class="py-3 text-right">Acción</th>
-                </tr>
-            </thead>
-            <tbody id="tabla-dashboard-ventas"></tbody>
-          </table>
-        </div>
-      </div>
-    </div>
-  `;
-
-  const btnHoy = document.getElementById('slicer-hoy');
-  const btnSemana = document.getElementById('slicer-semana');
-  const btnMes = document.getElementById('slicer-mes');
-  const btnAnio = document.getElementById('slicer-anio');
-  const tablaVentas = document.getElementById('tabla-dashboard-ventas');
-
-  const obtenerInicioPeriodo = (periodo) => {
-    const inicio = new Date();
-    inicio.setHours(0, 0, 0, 0, 0);
-    switch (periodo) {
-      case 'hoy':
-        return inicio;
-      case 'semana': {
-        const semana = new Date(inicio);
-        semana.setDate(semana.getDate() - 7);
-        return semana;
-      }
-      case 'mes':
-        return new Date(inicio.getFullYear(), inicio.getMonth(), 1, 0, 0, 0, 0);
-      case 'anio':
-        return new Date(inicio.getFullYear(), 0, 1, 0, 0, 0, 0);
-      default:
-        return inicio;
-    }
-  };
-
-  const formatearMoneda = (valor) => `$${valor.toFixed(2)}`;
-
-  const establecerBotonActivo = (activo) => {
-    [btnHoy, btnSemana, btnMes, btnAnio].forEach((boton) => {
-      if (!boton) return;
-      if (boton.id === `slicer-${activo}`) {
-        boton.classList.add('bg-zinc-900', 'text-white');
-      } else {
-        boton.classList.remove('bg-zinc-900', 'text-white');
-      }
-    });
-  };
-
-  const renderTablaVentas = (ventas) => {
-    if (!tablaVentas) return;
-    if (!ventas.length) {
-      tablaVentas.innerHTML = `<tr><td colspan="5" class="py-4 text-center text-zinc-400">No hay operaciones en este rango.</td></tr>`;
-      return;
-    }
-    tablaVentas.innerHTML = ventas.map((venta) => `
-      <tr class="border-b border-zinc-100 odd:bg-zinc-50/50 hover:bg-red-50/30 transition-colors">
-        <td class="py-3 pr-3">${venta.fecha.toLocaleString()}</td>
-        <td class="py-3 pr-3">${venta.concepto}</td>
-        <td class="py-3 pr-3">${venta.tipo}</td>
-        <td class="py-3 pr-3 text-right">${formatearMoneda(venta.monto)}</td>
-        <td class="py-3 pr-3 text-right"><button data-id="${venta.id}" class="anular-venta text-xs text-red-600 bg-red-50 px-2 py-1 rounded-md">Anular Venta 🗑️</button></td>
-      </tr>
-    `).join('');
-
-    // attach handlers for anular
-    tablaVentas.querySelectorAll('.anular-venta').forEach((btn) => {
-      btn.addEventListener('click', async () => {
-        const id = btn.dataset.id;
-        if (!(await mostrarConfirmacion('¿Confirmas anular esta venta? Esta acción eliminará la transacción.'))) return;
-        try {
-          await deleteDoc(doc(db, 'ventas', id));
-          await marcarActividadDB();
-          mostrarSnackbarMensaje('venta eliminada', 'info', 2800);
-        } catch (err) { console.error('Error al anular venta', err); mostrarSnackbarMensaje('no se pudo anular la venta', 'error', 3000); }
-      });
-    });
-  };
-
-  const ventasCache = [];
-
-  const actualizarDashboard = () => {
-    const fechaDesde = obtenerInicioPeriodo(filtroTemporalActual);
-    let total = 0;
-    let prod = 0;
-    let mbs = 0;
-    let transacciones = 0;
-
-    const ventasFiltradas = ventasCache.filter((venta) => venta.fecha >= fechaDesde);
-    ventasFiltradas.forEach((venta) => {
-      total += venta.monto;
-      if (venta.tipo === 'producto') prod += venta.monto;
-      if (venta.tipo === 'membresia') mbs += venta.monto;
-      transacciones += 1;
-    });
-
-    const ticketPromedio = transacciones > 0 ? total / transacciones : 0;
-    const ventasOrdenadas = [...ventasFiltradas].sort((a, b) => b.fecha - a.fecha);
-    const ultimasVentas = ventasOrdenadas.slice(0, 5);
-    const ventasGrafico = [...ventasFiltradas].sort((a, b) => a.fecha - b.fecha).slice(-7);
-
-    const kpiIngreso = document.getElementById('kpi-ingreso-mes');
-    const kpiProductos = document.getElementById('kpi-productos-monto');
-    const kpiTicket = document.getElementById('kpi-ticket-promedio');
-
-    if (kpiIngreso) kpiIngreso.textContent = formatearMoneda(total);
-    if (kpiProductos) kpiProductos.textContent = formatearMoneda(prod);
-    if (kpiTicket) kpiTicket.textContent = formatearMoneda(ticketPromedio);
-
-    if (window.Chart) {
-      const ctxL = document.getElementById('chart-linea-ingresos');
-      const loaderLinea = document.getElementById('loader-linea');
-      if (ctxL) {
-        if (chartLineaAdmin) { chartLineaAdmin.destroy(); chartLineaAdmin = null; }
-        // Top de Productos Más Vendidos (conteo por concepto)
-        const contador = {};
-        ventasFiltradas.forEach(v => {
-          const key = v.concepto || 'Otros';
-          contador[key] = (contador[key] || 0) + 1;
-        });
-        const ordenado = Object.keys(contador).map(k => ({ k, c: contador[k] })).sort((a,b) => b.c - a.c).slice(0, 7);
-        const labelsTop = ordenado.map(o => o.k);
-        const dataTop = ordenado.map(o => o.c);
-
-        const gradient = ctxL.getContext('2d').createLinearGradient(0, 0, 0, 280);
-        gradient.addColorStop(0, '#D32F2F');
-        gradient.addColorStop(1, '#7F1D1D');
-        chartLineaAdmin = new Chart(ctxL, {
-          type: 'bar',
-          data: {
-            labels: labelsTop,
-            datasets: [{ data: dataTop, backgroundColor: gradient, borderRadius: 8, borderSkipped: false }]
-          },
-          options: {
-            responsive: true,
-            maintainAspectRatio: false,
-            animation: { duration: 500, easing: 'easeOutQuart' },
-            layout: { padding: { top: 10, bottom: 10, left: 10, right: 10 } },
-            plugins: {
-              legend: { display: false },
-              tooltip: { mode: 'index', intersect: false, position: 'nearest' },
-              title: { display: true, text: 'Productos más vendidos', font: { size: 14 }, padding: { top: 10, bottom: 10 } }
-            },
-            scales: {
-              x: { grid: { display: false }, ticks: { maxRotation: 45, minRotation: 0, font: { size: 10 } } },
-              y: { grid: { color: '#F4F4F5' }, ticks: { precision: 0, callback: (value) => `$${value}`, font: { size: 10 } } }
-            }
-          }
-        });
-        if (loaderLinea) loaderLinea.classList.add('hidden');
-      }
-
-      const ctxD = document.getElementById('chart-dona-mix');
-      const loaderDona = document.getElementById('loader-dona');
-      if (ctxD) {
-        if (chartDonaAdmin) { chartDonaAdmin.destroy(); chartDonaAdmin = null; }
-        chartDonaAdmin = new Chart(ctxD, {
-          type: 'doughnut',
-          data: {
-            labels: ['Membresías', 'Productos'],
-            datasets: [{ data: [mbs, prod], backgroundColor: ['#D32F2F', '#111111'], borderWidth: 0 }]
-          },
-          options: {
-            responsive: true,
-            maintainAspectRatio: false,
-            cutout: '70%',
-            animation: { duration: 500, easing: 'easeOutQuart' },
-            plugins: {
-              legend: {
-                position: 'bottom',
-                labels: {
-                  boxWidth: 14,
-                  font: { weight: '600', size: 10 },
-                  padding: 10,
-                  usePointStyle: true
-                }
-              },
-              tooltip: {
-                callbacks: {
-                  label: (context) => `${context.label}: $${context.parsed}`
-                }
-              },
-              title: { display: true, text: 'Ventas por tipo', font: { size: 14 }, padding: { top: 10, bottom: 10 } }
-            }
-          }
-        });
-        if (loaderDona) loaderDona.classList.add('hidden');
-      }
-    }
-
-    // Render all transacciones en el periodo seleccionado
-    renderTablaVentas(ventasOrdenadas);
-  };
-
-  const actualizarFiltro = (periodo) => {
-    filtroTemporalActual = periodo;
-    establecerBotonActivo(periodo);
-    actualizarDashboard();
-  };
-
-  if (btnHoy) btnHoy.onclick = () => actualizarFiltro('hoy');
-  if (btnSemana) btnSemana.onclick = () => actualizarFiltro('semana');
-  if (btnMes) btnMes.onclick = () => actualizarFiltro('mes');
-  if (btnAnio) btnAnio.onclick = () => actualizarFiltro('anio');
-
-  establecerBotonActivo(filtroTemporalActual);
-
-  const hoy = new Date();
-  hoy.setHours(0, 0, 0, 0, 0);
-
-  const clientesUnsub = onSnapshot(query(collection(db, 'clientes'), where('fechaVencimiento', '>=', hoy)), (snap) => {
-    const kpiClientes = document.getElementById('kpi-miembros-activos');
-    if (kpiClientes) kpiClientes.textContent = `${snap.size}`;
-  });
-
-  const ventasUnsub = onSnapshot(collection(db, 'ventas'), (snap) => {
-    ventasCache.length = 0;
-    snap.forEach((docSnap) => {
-      const data = docSnap.data();
-      const fecha = data.fecha && typeof data.fecha.toDate === 'function' ? data.fecha.toDate() : data.fecha ? new Date(data.fecha) : null;
-      if (!fecha) return;
-      ventasCache.push({
-        id: docSnap.id,
-        fecha,
-        monto: Number(data.monto) || 0,
-        tipo: data.tipo || 'producto',
-        concepto: data.concepto || 'Venta'
-      });
-    });
-    actualizarDashboard();
-  });
-
-  desuscribirDashboard = () => {
-    ventasUnsub();
-    clientesUnsub();
-    desuscribirDashboard = null;
-  };
-}
-
-function cargarPantallaRoles() {
-  if (desuscribirDashboard) { desuscribirDashboard(); desuscribirDashboard = null; }
-  document.getElementById('usuario-nombre').textContent = "Dueño Rodeo";
-  document.getElementById('usuario-rol').textContent = "Administrador";
-
-  contenedorPantallas.innerHTML = `
-    <div class="space-y-6">
-      <div class="flex items-center justify-between gap-3">
-        <div>
-          <h2 class="text-2xl font-black">Catálogo Editable</h2>
-          <p class="text-zinc-500 text-xs">Actualiza precios al vuelo para que el panel principal use los nuevos valores.</p>
-        </div>
-        <div class="flex items-center gap-3">
-          <button id="btn-agregar-producto" class="text-xs bg-emerald-50 text-emerald-700 px-3 py-2 rounded-xl font-bold">Agregar Producto ➕</button>
-          <div id="roles-feedback" class="hidden rounded-3xl bg-emerald-50 border border-emerald-200 px-4 py-2 text-sm text-emerald-700"></div>
-        </div>
-      </div>
-      <div id="form-agregar-producto" class="hidden bg-white border border-zinc-100 rounded-2xl p-4 shadow-sm">
-        <div class="grid grid-cols-3 gap-2 items-end">
-          <div><label class="text-[10px] text-zinc-400">Nombre</label><input id="ap-nombre" class="w-full px-3 py-2 rounded-xl bg-zinc-50 text-xs" /></div>
-          <div><label class="text-[10px] text-zinc-400">Precio</label><input id="ap-precio" type="number" min="0" class="w-full px-3 py-2 rounded-xl bg-zinc-50 text-xs" /></div>
-          <div>
-            <label class="text-[10px] text-zinc-400">Icono</label>
-            <select id="ap-icono" class="w-full px-3 py-2 rounded-xl bg-zinc-50 text-xs border border-zinc-200">
-              ${iconosGymSeleccion.map((icono) => `<option value="${icono.valor}">${icono.valor} ${icono.etiqueta}</option>`).join('')}
-            </select>
-          </div>
-        </div>
-        <div class="mt-3 flex gap-2"><button id="ap-guardar" class="px-3 py-2 rounded-xl bg-zinc-900 text-white text-sm">Agregar</button><button id="ap-cancelar" class="px-3 py-2 rounded-xl bg-zinc-100 text-sm">Cancelar</button></div>
-      </div>
-      <div class="bg-white border border-zinc-100 overflow-hidden rounded-2xl p-4 shadow-sm overflow-x-auto">
-        <table class="w-full text-left text-xs">
-          <thead class="text-zinc-500 uppercase border-b border-zinc-200">
-            <tr>
-              <th class="py-3 pr-4">Producto</th>
-              <th class="py-3 pr-4">Emoji</th>
-              <th class="py-3 pr-4">Precio</th>
-              <th class="py-3 text-right">Acción</th>
-            </tr>
-          </thead>
-          <tbody id="tabla-productos-editables"></tbody>
-        </table>
-      </div>
-    </div>
-  `;
-
-  const tablaProductos = document.getElementById('tabla-productos-editables');
-  const feedback = document.getElementById('roles-feedback');
-
-  const mostrarFeedback = (mensaje) => {
-    if (!feedback) { mostrarSnackbarMensaje(mensaje, 'info', 2800); return; }
-    feedback.textContent = mensaje;
-    feedback.classList.remove('hidden');
-    setTimeout(() => feedback.classList.add('hidden'), 2800);
-  };
-
-  const renderProductos = () => {
-    if (!tablaProductos) return;
-    const itemsEditables = [
-      { id: 'memb-semana', nombre: 'Membresía Semana', precio: preciosMembresias.semana, icono: '', esMembresia: true, membresiaKey: 'semana' },
-      { id: 'memb-mes', nombre: 'Membresía Mes', precio: preciosMembresias.mes, icono: '', esMembresia: true, membresiaKey: 'mes' },
-      ...productosVentaRapida.map((producto) => ({
-        id: producto.id,
-        nombre: producto.nombre,
-        precio: producto.precio,
-        icono: producto.icono || '',
-        esMembresia: false
-      }))
-    ];
-
-    tablaProductos.innerHTML = itemsEditables.map((item, index) => `
-      <tr class="border-b border-zinc-100 hover:bg-zinc-50 transition-colors">
-        <td class="py-3 pr-4 align-top text-sm font-medium">${item.nombre}</td>
-        <td class="py-3 pr-4 align-top text-sm font-medium">
-          ${item.icono ? `<span class="text-xl ${esEmoji(item.icono) ? '' : 'material-symbols-outlined'}">${item.icono}</span>` : '<span class="text-zinc-400">—</span>'}
-        </td>
-        <td class="py-3 pr-4 align-top">
-          <input type="number" min="0" step="1" value="${item.precio}" data-item-id="${item.id}" data-membresia-key="${item.membresiaKey || ''}" class="precio-producto w-full bg-zinc-50 focus:bg-white focus:ring-2 focus:ring-red-500/20 focus:border-[#D32F2F] transition-all px-4 py-2 text-center font-bold rounded-xl appearance-none text-xs" />
-        </td>
-        <td class="py-3 text-right align-top">
-          <div class="inline-flex gap-2 items-center justify-end">
-            <button type="button" data-item-id="${item.id}" data-membresia-key="${item.membresiaKey || ''}" class="guardar-precio transform active:scale-95 hover:bg-zinc-800 shadow-sm flex items-center justify-center gap-1.5 rounded-2xl bg-zinc-900 px-3 py-2 text-white text-xs font-bold transition-all">Guardar 💾</button>
-            ${item.esMembresia ? '' : `<button type="button" data-item-id="${item.id}" class="eliminar-producto text-xs text-red-600 bg-red-50 px-3 py-2 rounded-2xl">Eliminar 🗑️</button>`}
-          </div>
-        </td>
-      </tr>
-    `).join('');
-
-    tablaProductos.querySelectorAll('.guardar-precio').forEach((boton) => {
-      boton.addEventListener('click', () => {
-        const itemId = boton.dataset.itemId;
-        const membresiaKey = boton.dataset.membresiaKey;
-        const input = tablaProductos.querySelector(`input[data-item-id="${itemId}"]`);
-        const nuevoPrecio = Number(input?.value);
-        if (Number.isNaN(nuevoPrecio) || nuevoPrecio < 0) {
-          mostrarSnackbarMensaje('Ingresa un precio válido para el producto.', 'error', 3000);
-          return;
-        }
-        if (membresiaKey) {
-          preciosMembresias[membresiaKey] = nuevoPrecio;
-          mostrarFeedback(`Precio de ${membresiaKey === 'semana' ? 'Membresía Semana' : 'Membresía Mes'} actualizado a $${nuevoPrecio}.`);
-        } else {
-          const index = productosVentaRapida.findIndex((p) => p.id === itemId);
-          if (index !== -1) {
-            productosVentaRapida[index].precio = nuevoPrecio;
-            mostrarFeedback(`Precio de ${productosVentaRapida[index].nombre} actualizado a $${nuevoPrecio}.`);
-          }
-        }
-        mostrarSnackbarMensaje('Precio actualizado. Al volver al panel principal o a Membresías se usarán los nuevos valores.', 'success', 3000);
-      });
-    });
-
-    tablaProductos.querySelectorAll('.eliminar-producto').forEach((boton) => {
-      boton.addEventListener('click', async () => {
-        const itemId = boton.dataset.itemId;
-        const index = productosVentaRapida.findIndex((p) => p.id === itemId);
-        if (index === -1) return;
-        if (!(await mostrarConfirmacion(`¿Eliminar ${productosVentaRapida[index].nombre}? Esta acción es permanente.`))) return;
-        const eliminado = productosVentaRapida.splice(index, 1);
-        renderProductos();
-        mostrarSnackbarMensaje(`Producto eliminado: ${eliminado[0].nombre}. Al volver al panel principal, los botones se actualizarán.`, 'info', 3000);
-      });
-    });
-
-    // agregar producto handlers
-    const btnAgregar = document.getElementById('btn-agregar-producto');
-    const formAgregar = document.getElementById('form-agregar-producto');
-    const apGuardar = document.getElementById('ap-guardar');
-    const apCancelar = document.getElementById('ap-cancelar');
-    if (btnAgregar) btnAgregar.onclick = () => { if (formAgregar) formAgregar.classList.toggle('hidden'); };
-    if (apCancelar) apCancelar.onclick = () => { if (formAgregar) formAgregar.classList.add('hidden'); };
-    if (apGuardar) apGuardar.onclick = () => {
-      const nombre = document.getElementById('ap-nombre').value.trim();
-      const precio = Number(document.getElementById('ap-precio').value);
-      const icono = document.getElementById('ap-icono').value.trim() || '';
-      if (!nombre || Number.isNaN(precio) || precio < 0) { mostrarSnackbarMensaje('Nombre y precio válidos son requeridos.', 'error', 3000); return; }
-      const nuevo = { id: Date.now().toString(), nombre, precio, icono };
-      productosVentaRapida.push(nuevo);
-      renderProductos();
-      if (formAgregar) formAgregar.classList.add('hidden');
-      mostrarSnackbarMensaje(`Producto agregado: ${nombre}. Al volver al panel principal, los botones se actualizarán.`, 'success', 3000);
-    };
-  };
-
-  renderProductos();
-}
-
-function cargarPantallaSeguridad() {
+btnCalculadoraLibre.onclick = () => {
   apagarEscuchasActivos();
-  document.getElementById('usuario-nombre').textContent = "Dueño Rodeo";
-  document.getElementById('usuario-rol').textContent = "Administrador";
+  resetearEstilosBotones();
+  btnCalculadoraLibre.className = "w-full flex items-center gap-4 px-4 py-3 rounded-xl transition bg-[#D32F2F] text-white font-medium shadow-lg shadow-red-900/10 text-left text-sm";
+  contenedorPantallas.classList.add('hidden');
+  pantallaCalculadoraLibre.classList.remove('hidden');
+  calcDisplay.textContent = "0";
+};
 
-  contenedorPantallas.innerHTML = `
-    <div class="max-w-md mx-auto mt-8 space-y-4 select-none">
-      <div class="rounded-3xl border border-zinc-100 bg-white p-5 shadow-sm">
-        <div class="flex items-center gap-4">
-          <div class="flex h-12 w-12 items-center justify-center rounded-2xl bg-red-50 text-red-600 shadow-sm">
-            <span class="text-2xl">🔒</span>
-          </div>
-          <div>
-            <h2 class="text-2xl font-black">Ajustes de Llave Maestra</h2>
-            <p class="text-zinc-500 text-xs">Actualización de PIN institucional corporativo.</p>
-          </div>
-        </div>
-        <form id="form-admin-security" class="mt-6 space-y-4">
-          <div>
-            <label class="block text-[10px] font-bold text-zinc-400 mb-2">Contraseña Nueva</label>
-            <input type="password" id="new-p" required class="w-full rounded-2xl border border-zinc-200 bg-zinc-50 px-4 py-3 text-sm focus:bg-white focus:ring-2 focus:ring-red-500/20 focus:border-[#D32F2F] transition-all" />
-          </div>
-          <button type="submit" class="w-full rounded-2xl bg-zinc-900 py-3 text-sm font-bold text-white shadow-md transition hover:bg-zinc-800">ACTUALIZAR LLAVE</button>
-        </form>
-      </div>
-      <div class="rounded-3xl border border-zinc-100 bg-white p-5 shadow-sm">
-        <h3 class="text-sm font-bold text-zinc-900 uppercase mb-3">Actualizar fecha de cumpleaños</h3>
-        <p class="text-zinc-500 text-xs mb-4">Esta fecha se usa para recuperar el acceso si olvidas tu contraseña.</p>
-        <form id="form-admin-birthday" class="space-y-4">
-          <div>
-            <label class="block text-[10px] font-bold text-zinc-400 mb-2">Fecha de nacimiento registrada</label>
-            <input type="date" id="new-nacimiento" value="${datosSeguridadLocal && datosSeguridadLocal.nacimiento ? datosSeguridadLocal.nacimiento : '2026-01-01'}" class="w-full rounded-2xl border border-zinc-200 bg-zinc-50 px-4 py-3 text-sm focus:bg-white focus:ring-2 focus:ring-red-500/20 focus:border-[#D32F2F] transition-all" />
-          </div>
-          <button type="submit" class="w-full rounded-2xl bg-zinc-900 py-3 text-sm font-bold text-white shadow-md transition hover:bg-zinc-800">ACTUALIZAR CUMPLEAÑOS</button>
-        </form>
-      </div>
-      <div class="rounded-3xl border border-zinc-100 bg-zinc-50 p-4 shadow-sm">
-        <p class="font-bold text-zinc-900 text-sm uppercase mb-2">Última actividad en la base de datos</p>
-        <p id="seguridad-ultima-actividad" class="text-[11px] text-zinc-500">Cargando actividad reciente...</p>
-      </div>
-    </div>
-  `;
-  actualizarUltimaActividadSeguridad();
-  async function actualizarUltimaActividadSeguridad() {
-    try {
-      const activitySnapshot = await getDoc(refActividadDB);
-      if (!activitySnapshot.exists()) {
-        document.getElementById('seguridad-ultima-actividad').textContent = 'No hay actividad reciente registrada.';
-      } else {
-        const actividad = activitySnapshot.data();
-        let fechaActividad = null;
-        if (actividad.ultimaActividad && typeof actividad.ultimaActividad.toDate === 'function') {
-          fechaActividad = actividad.ultimaActividad.toDate();
-        } else if (activitySnapshot.updateTime && typeof activitySnapshot.updateTime.toDate === 'function') {
-          fechaActividad = activitySnapshot.updateTime.toDate();
-        }
-        document.getElementById('seguridad-ultima-actividad').textContent = fechaActividad ? `Última actividad en la base de datos: ${fechaActividad.toLocaleString('es-ES')}` : 'No hay actividad reciente disponible.';
-      }
-    } catch (err) {
-      console.error('Error al leer última actividad en DB:', err);
-      document.getElementById('seguridad-ultima-actividad').textContent = 'Error al cargar la actividad reciente.';
-    }
-  }
-  document.getElementById('form-admin-security').onsubmit = async (e) => {
-    e.preventDefault(); const np = document.getElementById('new-p').value.trim();
-    if(np.length < 4) { mostrarSnackbarMensaje('Mínimo 4 caracteres', 'error', 3000); return; }
-    await setDoc(doc(db, "configuracion", "credenciales"), { password: np, nacimiento: datosSeguridadLocal ? datosSeguridadLocal.nacimiento : "2026-01-01", ultimaActualizacion: serverTimestamp() }, { merge: true });
-    await marcarActividadDB();
-    datosSeguridadLocal = { ...datosSeguridadLocal, password: np };
-    mostrarSnackbarMensaje('¡PIN Modificado con éxito!', 'success', 3000); e.target.reset();
-    actualizarUltimaActividadSeguridad();
+document.querySelectorAll('.btn-calc').forEach(btn => {
+  btn.onclick = () => {
+    const valor = btn.getAttribute('data-val'); const actual = calcDisplay.textContent;
+    if (valor === 'C') { calcDisplay.textContent = "0"; } 
+    else if (valor === '=') { try { let exp = actual.replace(/×/g, '*').replace(/÷/g, '/'); calcDisplay.textContent = Number(eval(exp)).toString(); } catch (e) { calcDisplay.textContent = "Error"; } } 
+    else { if (actual === "0" || actual === "Error") { calcDisplay.textContent = valor; } else { calcDisplay.textContent += valor; } }
   };
-  const formBirthday = document.getElementById('form-admin-birthday');
-  if (formBirthday) {
-    formBirthday.onsubmit = async (e) => {
-      e.preventDefault();
-      const nuevoNacimiento = document.getElementById('new-nacimiento').value.trim();
-      if (!nuevoNacimiento) { mostrarSnackbarMensaje('Ingresa una fecha válida.', 'error', 3000); return; }
-      await setDoc(doc(db, "configuracion", "credenciales"), { nacimiento: nuevoNacimiento, ultimaActualizacion: serverTimestamp() }, { merge: true });
-      await marcarActividadDB();
-      datosSeguridadLocal = { ...datosSeguridadLocal, nacimiento: nuevoNacimiento };
-      mostrarSnackbarMensaje('Fecha de cumpleaños actualizada con éxito.', 'success', 3000);
-      actualizarUltimaActividadSeguridad();
-    };
-  }
-}
-
+});
 
 // =======================================================
-// CONTROL DE NAVEGACIÓN GENERAL
+// CONTROL DE NAVEGACIÓN GENERAL (PUENTE INTERCOMUNICADOR CORREGIDO)
 // =======================================================
 function resetearEstilosBotones() {
-  [btnPrincipal, btnMembresias, btnDinamicas, btnEstadisticas, btnRoles, btnSeguridad].forEach(btn => { if(btn) btn.className = "w-full flex items-center gap-4 px-4 py-3 rounded-xl transition text-zinc-400 hover:bg-zinc-900 hover:text-white font-medium"; });
+  [btnPrincipal, btnMembresias, btnDinamicas, btnCalculadoraLibre, btnEstadisticas, btnRoles, btnSeguridad].forEach(btn => { if(btn) btn.className = "w-full flex items-center gap-4 px-4 py-3 rounded-xl transition text-zinc-400 hover:bg-zinc-900 hover:text-white font-medium text-left text-sm"; });
 }
 function activarBoton(boton) {
-  resetearEstilosBotones(); if(boton) boton.className = "w-full flex items-center gap-4 px-4 py-3 rounded-xl transition bg-[#D32F2F] text-white font-medium shadow-lg shadow-red-900/10";
+  resetearEstilosBotones(); if(boton) boton.className = "w-full flex items-center gap-4 px-4 py-3 rounded-xl transition bg-[#D32F2F] text-white font-medium shadow-lg shadow-red-900/10 text-left text-sm";
 }
 
-btnPrincipal.onclick = () => { activarBoton(btnPrincipal); cargarPantallaUnificada(); };
-btnMembresias.onclick = () => { activarBoton(btnMembresias); cargarPantallaMembresiasMaster(); };
-btnDinamicas.onclick = () => { activarBoton(btnDinamicas); cargarPantallaDinamicas(); };
+btnPrincipal.onclick = () => { 
+  window.dispatchEvent(new CustomEvent('limpiarGraficosAdmin')); // Apaga observadores gerenciales
+  activarBoton(btnPrincipal); 
+  cargarPantallaUnificada(); 
+};
+btnMembresias.onclick = () => { 
+  window.dispatchEvent(new CustomEvent('limpiarGraficosAdmin')); 
+  activarBoton(btnMembresias); 
+  cargarPantallaMembresiasMaster(); 
+};
+btnDinamicas.onclick = () => { 
+  window.dispatchEvent(new CustomEvent('limpiarGraficosAdmin')); 
+  activarBoton(btnDinamicas); 
+  cargarPantallaDinamicas(); 
+};
 
-// 🔥 ENLACE DE LLAMADAS COMPLETAMENTE DEPURADO
-btnEstadisticas.onclick = () => { validarAccesoAdmin(cargarPantallaEstadisticas, btnEstadisticas); };
-btnRoles.onclick = () => { validarAccesoAdmin(cargarPantallaRoles, btnRoles); };
-btnSeguridad.onclick = () => { validarAccesoAdmin(cargarPantallaSeguridad, btnSeguridad); };
+// Redireccionadores mediante CustomEvents para activar la interfaz protegida de admin.js
+btnEstadisticas.onclick = () => { 
+  apagarEscuchasActivos();
+  activarBoton(btnEstadisticas);
+  window.dispatchEvent(new CustomEvent('abrirEstadisticasAdmin'));
+};
+btnRoles.onclick = () => { 
+  apagarEscuchasActivos();
+  activarBoton(btnRoles);
+  window.dispatchEvent(new CustomEvent('abrirProductosAdmin'));
+};
+btnSeguridad.onclick = () => { 
+  apagarEscuchasActivos();
+  activarBoton(btnSeguridad);
+  window.dispatchEvent(new CustomEvent('abrirSeguridadAdmin'));
+};
 
 // Arrancamos el Panel Principal al abrir el sistema
 cargarPantallaUnificada();
