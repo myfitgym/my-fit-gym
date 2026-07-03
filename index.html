@@ -19,6 +19,12 @@
     .material-symbols-outlined {
       font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
     }
+    /* Ocultar flechas en inputs numéricos */
+    input::-webkit-outer-spin-button,
+    input::-webkit-inner-spin-button {
+      -webkit-appearance: none;
+      margin: 0;
+    }
   </style>
 </head>
 <body class="bg-[#FDF8F8] text-[#121212] font-sans min-h-screen flex flex-col md:flex-row">
@@ -46,7 +52,12 @@
         <button id="btn-dinamicas" class="w-full flex items-center gap-3 px-4 py-4 rounded-2xl transition text-zinc-400 hover:bg-zinc-900 hover:text-white font-medium text-left text-sm">
           <span class="material-symbols-outlined">auto_awesome_motion</span><span>Dinámicas</span>
         </button>
+        
+        <button id="btn-calculadora-libre" class="w-full flex items-center gap-3 px-4 py-4 rounded-2xl transition text-zinc-400 hover:bg-zinc-900 hover:text-white font-medium text-left text-sm">
+          <span class="material-symbols-outlined">calculate</span><span>Calculadora Gral.</span>
+        </button>
       </div>
+      
       <div class="space-y-2 col-span-2 md:col-span-1">
         <p class="text-[10px] text-zinc-500 font-bold tracking-wider px-4 mb-1 uppercase">Administración</p>
         <button id="btn-estadisticas" class="w-full flex items-center gap-3 px-4 py-4 rounded-2xl transition text-zinc-400 hover:bg-zinc-900 hover:text-white font-medium text-left text-sm">
@@ -69,6 +80,7 @@
       </div>
     </div>
   </aside>
+
   <div id="sidebar-backdrop" class="hidden fixed inset-0 bg-black/50 backdrop-blur-sm z-30 md:hidden"></div>
   <button id="btn-toggle-sidebar" type="button" class="md:hidden fixed top-4 left-4 z-30 inline-flex items-center justify-center w-11 h-11 rounded-full bg-white text-zinc-700 border border-zinc-200 shadow-sm hover:bg-zinc-50 transition focus:outline-none focus:ring-2 focus:ring-red-500/30" aria-expanded="false">
     <span class="material-symbols-outlined text-2xl">menu</span>
@@ -76,8 +88,39 @@
 
   <main class="flex-1 p-4 lg:p-8 overflow-y-auto h-full pb-28 md:pb-0">
     <div id="offline-banner" class="hidden fixed top-20 left-1/2 z-40 -translate-x-1/2 w-[min(92vw,28rem)] rounded-3xl bg-amber-500/95 text-zinc-950 border border-amber-600 px-4 py-3 text-sm shadow-xl backdrop-blur-sm text-center"></div>
-    <div id="contenedor-pantallas" class="max-w-7xl mx-auto px-0 lg:px-4">
+    
+    <div id="contenedor-pantallas" class="max-w-7xl mx-auto px-0 lg:px-4 space-y-8">
       <h2 class="text-2xl font-bold text-zinc-800">Cargando sistema...</h2>
+    </div>
+
+    <div id="pantalla-calculadora-libre" class="hidden max-w-md mx-auto bg-zinc-900 text-white rounded-3xl p-6 shadow-2xl border border-zinc-800 mt-6">
+      <h3 class="text-xl font-bold mb-4 flex items-center gap-2 text-zinc-100">
+        <span class="material-symbols-outlined text-[#D32F2F]">calculate</span> Calculadora Rápida
+      </h3>
+      <div id="calc-display" class="bg-zinc-950 rounded-2xl p-4 text-right text-3xl font-mono text-emerald-400 overflow-x-auto h-16 flex items-center justify-end mb-4 border border-zinc-800">0</div>
+      <div class="grid grid-cols-4 gap-3">
+        <button class="btn-calc bg-zinc-800 hover:bg-zinc-700 p-4 rounded-xl text-xl font-bold text-red-400 transition" data-val="C">C</button>
+        <button class="btn-calc bg-zinc-800 hover:bg-zinc-700 p-4 rounded-xl text-xl font-bold text-zinc-400 transition" data-val="/">÷</button>
+        <button class="btn-calc bg-zinc-800 hover:bg-zinc-700 p-4 rounded-xl text-xl font-bold text-zinc-400 transition" data-val="*">×</button>
+        <button class="btn-calc bg-zinc-800 hover:bg-zinc-700 p-4 rounded-xl text-xl font-bold text-zinc-400 transition" data-val="-">-</button>
+        
+        <button class="btn-calc bg-zinc-800/50 hover:bg-zinc-700 p-4 rounded-xl text-xl font-bold transition" data-val="7">7</button>
+        <button class="btn-calc bg-zinc-800/50 hover:bg-zinc-700 p-4 rounded-xl text-xl font-bold transition" data-val="8">8</button>
+        <button class="btn-calc bg-zinc-800/50 hover:bg-zinc-700 p-4 rounded-xl text-xl font-bold transition" data-val="9">9</button>
+        <button class="btn-calc bg-zinc-800 hover:bg-zinc-700 p-4 rounded-xl text-xl font-bold text-zinc-400 transition row-span-2 flex items-center justify-center h-full" data-val="+">+</button>
+        
+        <button class="btn-calc bg-zinc-800/50 hover:bg-zinc-700 p-4 rounded-xl text-xl font-bold transition" data-val="4">4</button>
+        <button class="btn-calc bg-zinc-800/50 hover:bg-zinc-700 p-4 rounded-xl text-xl font-bold transition" data-val="5">5</button>
+        <button class="btn-calc bg-zinc-800/50 hover:bg-zinc-700 p-4 rounded-xl text-xl font-bold transition" data-val="6">6</button>
+        
+        <button class="btn-calc bg-zinc-800/50 hover:bg-zinc-700 p-4 rounded-xl text-xl font-bold transition" data-val="1">1</button>
+        <button class="btn-calc bg-zinc-800/50 hover:bg-zinc-700 p-4 rounded-xl text-xl font-bold transition" data-val="2">2</button>
+        <button class="btn-calc bg-zinc-800/50 hover:bg-zinc-700 p-4 rounded-xl text-xl font-bold transition" data-val="3">3</button>
+        <button class="btn-calc bg-[#D32F2F] hover:bg-red-700 p-4 rounded-xl text-xl font-bold text-white transition row-span-2 flex items-center justify-center h-full" data-val="=">=</button>
+        
+        <button class="btn-calc bg-zinc-800/50 hover:bg-zinc-700 p-4 rounded-xl text-xl font-bold transition col-span-2" data-val="0">0</button>
+        <button class="btn-calc bg-zinc-800/50 hover:bg-zinc-700 p-4 rounded-xl text-xl font-bold transition" data-val=".">.</button>
+      </div>
     </div>
   </main>
 
