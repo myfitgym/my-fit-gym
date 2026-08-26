@@ -1,10 +1,11 @@
 import { db } from './firebase.js';
-import { collection, onSnapshot, doc, setDoc, deleteDoc, getDoc, serverTimestamp, updateDoc, addDoc } from 'firebase/firestore';
+import { collection, onSnapshot, doc, setDoc, deleteDoc, getDoc, updateDoc, addDoc } from 'firebase/firestore';
 
 const contenedorPantallas = document.getElementById('contenedor-pantallas');
 const btnEstadisticas = document.getElementById('btn-estadisticas');
 const btnRoles = document.getElementById('btn-roles');
 const btnSeguridad = document.getElementById('btn-seguridad');
+const btnAbonos = document.getElementById('btn-abonos');
 
 const btnPrincipal = document.getElementById('btn-principal');
 const btnMembresias = document.getElementById('btn-membresias');
@@ -73,8 +74,10 @@ function inicializarSuscripcionVentasAdmin() {
           concepto: data.concepto || 'Venta Express',
           metodoPago: data.metodoPago || data.metodo || 'Efectivo',
           tipo: data.tipo || 'producto',
-          productosArr: Array.isArray(data.productosArr) ? data.productosArr : []
-        });
+              productosArr: Array.isArray(data.productosArr) ? data.productosArr : [],
+              estadoPago: data.estadoPago || null,
+              saldoPendiente: Number(data.saldoPendiente || 0)
+            });
       });
       ventasCacheGlobalAdmin.sort((a, b) => b.fecha - a.fecha);
       procesarGraficosSlicers();
@@ -183,6 +186,7 @@ function cargarPantallaEstadisticas() {
         <div class="p-5 bg-white border rounded-3xl shadow-sm"><p class="text-[10px] font-bold text-zinc-400 uppercase">Miembros Activos</p><h3 class="text-2xl font-black mt-1" id="kpi-miembros-activos">0</h3></div>
         <div class="p-5 bg-white border rounded-3xl shadow-sm"><p class="text-[10px] font-bold text-zinc-400 uppercase">Suplementos</p><h3 class="text-2xl font-black mt-1" id="kpi-productos-monto">$0.00</h3></div>
         <div class="p-5 bg-white border rounded-3xl shadow-sm"><p class="text-[10px] font-bold text-zinc-400 uppercase">Ticket Promedio</p><h3 class="text-2xl font-black mt-1" id="kpi-ticket-promedio">$0.00</h3></div>
+        <div class="p-5 bg-white border rounded-3xl shadow-sm"><p class="text-[10px] font-bold text-zinc-400 uppercase">MONTO CUENTAS POR COBRAR</p><h3 class="text-2xl font-black mt-1" id="kpi-cuentas-por-cobrar">$0.00</h3></div>
       </div>
       <div class="grid grid-cols-1 lg:grid-cols-3 gap-4">
         <div class="lg:col-span-2 p-5 bg-white border rounded-3xl h-[280px] relative flex items-center justify-center"><canvas id="chart-linea-ingresos"></canvas></div>
@@ -278,16 +282,23 @@ function procesarGraficosSlicers() {
   let total = 0;
   let prod = 0;
   let mbs = 0;
-  const etiquetasBarras = [];
-  const montosBarras = [];
 
-  ventasFiltradas.slice(0, 7).forEach((venta) => {
+  // Agrupar ventas por producto (contar cantidades vendidas)
+  const productCounts = {};
+  ventasFiltradas.forEach((venta) => {
     total += venta.monto;
     if (venta.tipo === 'producto') prod += venta.monto;
     if (venta.tipo === 'membresia') mbs += venta.monto;
-    etiquetasBarras.push(venta.concepto ? venta.concepto.substring(0, 15) : 'Venta');
-    montosBarras.push(venta.monto);
+    const items = Array.isArray(venta.productosArr) ? venta.productosArr : [];
+    items.forEach((it) => {
+      const name = (it.nombre || it.id || 'Producto').toString();
+      const qty = Number(it.cantidad || 1);
+      productCounts[name] = (productCounts[name] || 0) + qty;
+    });
   });
+
+  const etiquetasBarras = Object.keys(productCounts);
+  const montosBarras = etiquetasBarras.map(k => Math.round(productCounts[k]));
 
   const kpiIngreso = document.getElementById('kpi-ingreso-mes');
   const kpiMiembros = document.getElementById('kpi-miembros-activos');
@@ -300,6 +311,15 @@ function procesarGraficosSlicers() {
   if (kpiProductos) kpiProductos.textContent = `$${prod.toFixed(2)}`;
   if (kpiTicket) kpiTicket.textContent = `$${(ventasFiltradas.length > 0 ? total / ventasFiltradas.length : 0).toFixed(2)}`;
   if (tituloTabla) tituloTabla.textContent = `Operaciones del Periodo (${filtroTemporalActual.toUpperCase()})`;
+
+  // KPI: monto total de cuentas por cobrar (suma de saldoPendiente / saldo) — GLOBAL (sin filtrar por slicer)
+  const kpiCuentas = document.getElementById('kpi-cuentas-por-cobrar');
+  const pendientes = ventasCacheGlobalAdmin.filter(v => (v.estadoPago === 'pendiente') || (v.saldoPendiente && Number(v.saldoPendiente) > 0));
+  const montoPendienteTotal = pendientes.reduce((acc, v) => {
+    const val = Number(v.saldoPendiente ?? v.saldo ?? 0);
+    return acc + (isNaN(val) ? 0 : val);
+  }, 0);
+  if (kpiCuentas) kpiCuentas.textContent = montoPendienteTotal.toLocaleString('es-MX', { style: 'currency', currency: 'MXN' });
 
   const tbodyAdmin = document.getElementById('tabla-dashboard-ventas-admin');
   if (tbodyAdmin) {
@@ -412,7 +432,7 @@ function procesarGraficosSlicers() {
           labels: etiquetasBarras,
           datasets: [{ data: montosBarras, backgroundColor: '#D32F2F', borderRadius: 6 }]
         },
-        options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } } }
+          options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } }, scales: { y: { beginAtZero: true, ticks: { stepSize: 1 } } } }
       });
     }
 
@@ -422,14 +442,24 @@ function procesarGraficosSlicers() {
         chartDonaAdmin.destroy();
         chartDonaAdmin = null;
       }
-      chartDonaAdmin = new Chart(ctxDona, {
-        type: 'doughnut',
-        data: {
-          labels: ['Membresías', 'Productos'],
-          datasets: [{ data: [mbs, prod], backgroundColor: ['#121212', '#D32F2F'], borderWidth: 0 }]
-        },
-        options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { position: 'bottom' } } }
+      // Reemplazar gráfica de dona por gráfica de afluencia: ventas por horario
+      const horasLabels = Array.from({length:24}, (_,i) => (i < 10 ? '0' + i : ''+i) + ':00');
+      const horasCounts = Array.from({length:24}, () => 0);
+      ventasFiltradas.forEach(v => {
+        try {
+          const h = (v.fecha && typeof v.fecha.getHours === 'function') ? v.fecha.getHours() : (new Date(v.fecha)).getHours();
+          horasCounts[h] = (horasCounts[h] || 0) + 1;
+        } catch(e) { }
       });
+
+      chartDonaAdmin = new Chart(ctxDona, {
+          type: 'bar',
+          data: {
+            labels: horasLabels,
+            datasets: [{ data: horasCounts, backgroundColor: '#121212' }]
+          },
+          options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } }, scales: { y: { beginAtZero: true, ticks: { stepSize: 1 } } } }
+        });
     }
   }
 }
@@ -711,32 +741,41 @@ function cargarPantallaSeguridad() {
   if (!contenedorPantallas) return;
 
   contenedorPantallas.innerHTML = `
-    <div class="max-w-md space-y-4 select-none">
-      <div>
-        <h2 class="text-2xl font-black">Ajustes de Llave Maestra</h2>
-        <p class="text-zinc-500 text-xs">Actualización de PIN de seguridad del gimnasio.</p>
-        <p id="seguridad-ultima-guardado" class="text-zinc-500 text-[11px]">Cargando última actualización...</p>
+    <div class="grid grid-cols-2 gap-6 select-none">
+      <div class="space-y-4">
+        <div>
+          <h2 class="text-2xl font-black">Actualizar contraseña</h2>
+        </div>
+        <form id="form-admin-security" class="bg-white border p-5 rounded-3xl space-y-3 shadow-sm">
+          <div><label class="block text-[10px] font-bold text-zinc-400">Contraseña Nueva</label><input type="password" id="new-p" required class="w-full border rounded-xl p-2 text-xs outline-none focus:border-red-500"></div>
+          <button type="submit" class="w-full py-2 bg-zinc-900 text-white font-bold text-xs rounded-xl shadow-md">ACTUALIZAR CONTRASEÑA</button>
+        </form>
       </div>
-      <form id="form-admin-security" class="bg-white border p-5 rounded-3xl space-y-3 shadow-sm">
-        <div><label class="block text-[10px] font-bold text-zinc-400">Contraseña Nueva</label><input type="password" id="new-p" required class="w-full border rounded-xl p-2 text-xs outline-none focus:border-red-500"></div>
-        <button type="submit" class="w-full py-2 bg-zinc-900 text-white font-bold text-xs rounded-xl shadow-md">ACTUALIZAR LLAVE</button>
-      </form>
+
+      <div class="space-y-4">
+        <div>
+          <h3 class="text-lg font-bold">Pregunta de Seguridad</h3>
+          <p class="text-zinc-500 text-xs">Usada para recuperación de acceso.</p>
+        </div>
+        <form id="form-admin-security-question" class="bg-white border p-5 rounded-3xl space-y-3 shadow-sm">
+          <div>
+            <label class="block text-[10px] font-bold text-zinc-400">Pregunta</label>
+            <select id="seg-pregunta-select" class="w-full border rounded-xl p-2 text-xs outline-none">
+              <option value="cumpleanios">¿Cuál es tu fecha de nacimiento?</option>
+              <option value="mascota">¿Cuál fue el nombre de tu primera mascota?</option>
+              <option value="escuela">¿Cuál es el nombre de tu escuela primaria?</option>
+              <option value="ciudad">¿En qué ciudad naciste?</option>
+            </select>
+          </div>
+          <div>
+            <label class="block text-[10px] font-bold text-zinc-400">Respuesta</label>
+            <input type="text" id="seg-respuesta-input" class="w-full border rounded-xl p-2 text-xs outline-none focus:border-red-500">
+          </div>
+          <button type="button" id="btn-guardar-pregunta" class="w-full py-2 bg-zinc-900 text-white font-bold text-xs rounded-xl shadow-md">Guardar Pregunta de Seguridad</button>
+        </form>
+      </div>
     </div>
   `;
-
-  async function actualizarUltimaGuardadoSeguridad() {
-    try {
-      const docSnap = await getDoc(refCredenciales);
-      if (!docSnap.exists()) return;
-      const datos = docSnap.data();
-      const elemento = document.getElementById('seguridad-ultima-guardado');
-      if (!elemento) return;
-      const fechaTexto = datos.ultimaActualizacion?.toDate ? datos.ultimaActualizacion.toDate().toLocaleString('es-ES') : 'No disponible';
-      elemento.textContent = `Última vez guardado en DB: ${fechaTexto}`;
-    } catch (error) {
-      console.error(error);
-    }
-  }
 
   const form = document.getElementById('form-admin-security');
   if (!form) return;
@@ -749,24 +788,62 @@ function cargarPantallaSeguridad() {
       return;
     }
     try {
+      // guardar contraseña y mantener campo nacimiento si existe
+      const current = await getDoc(refCredenciales);
+      const nacimiento = current.exists() ? (current.data().nacimiento || '2026-01-01') : (datosSeguridadLocal?.nacimiento || '2026-01-01');
       await setDoc(
         doc(db, 'configuracion', 'credenciales'),
-        { password: np, nacimiento: datosSeguridadLocal?.nacimiento || '2026-01-01', ultimaActualizacion: serverTimestamp() },
+        { password: np, nacimiento: nacimiento, ultimaActualizacion: new Date().toISOString() },
         { merge: true }
       );
-      if (window.mostrarSnackbarMensaje) window.mostrarSnackbarMensaje('PIN modificado con éxito.', 'success'); else alert('PIN Modificado con éxito.');
+      if (window.mostrarSnackbarMensaje) window.mostrarSnackbarMensaje('Contraseña modificada con éxito.', 'success'); else alert('Contraseña modificada con éxito.');
       form.reset();
-      actualizarUltimaGuardadoSeguridad();
     } catch (error) {
       console.error(error);
     }
   };
 
-  actualizarUltimaGuardadoSeguridad();
+  // cargar valores actuales para la pregunta de seguridad si existen
+  (async () => {
+    try {
+      const docSnap = await getDoc(refCredenciales);
+      if (!docSnap.exists()) return;
+      const datos = docSnap.data();
+      const sel = document.getElementById('seg-pregunta-select');
+      const resp = document.getElementById('seg-respuesta-input');
+      if (sel && datos.seguridadPreguntaId) sel.value = datos.seguridadPreguntaId;
+      // No rellenar la respuesta por seguridad, dejar en blanco
+    } catch (error) {
+      console.error(error);
+    }
+  })();
+
+  const btnGuardarPregunta = document.getElementById('btn-guardar-pregunta');
+  if (btnGuardarPregunta) {
+    btnGuardarPregunta.onclick = async () => {
+      const preguntaId = document.getElementById('seg-pregunta-select')?.value;
+      const respuesta = document.getElementById('seg-respuesta-input')?.value?.trim();
+      if (!preguntaId || !respuesta) {
+        if (window.mostrarSnackbarMensaje) window.mostrarSnackbarMensaje('Seleccione pregunta y escriba la respuesta', 'error'); else alert('Seleccione pregunta y escriba la respuesta');
+        return;
+      }
+      try {
+        await setDoc(
+          doc(db, 'configuracion', 'credenciales'),
+          { seguridadPreguntaId: preguntaId, seguridadRespuesta: respuesta, ultimaActualizacion: new Date().toISOString() },
+          { merge: true }
+        );
+        if (window.mostrarSnackbarMensaje) window.mostrarSnackbarMensaje('Pregunta de seguridad guardada.', 'success'); else alert('Pregunta de seguridad guardada.');
+        document.getElementById('seg-respuesta-input').value = '';
+      } catch (error) {
+        console.error(error);
+      }
+    };
+  }
 }
 
 function MarcarBotonYTab(b, f) {
-  [btnEstadisticas, btnRoles, btnSeguridad, btnPrincipal, btnMembresias, btnDinamicas].forEach((btn) => {
+  [btnEstadisticas, btnRoles, btnSeguridad, btnPrincipal, btnMembresias, btnDinamicas, btnAbonos].forEach((btn) => {
     if (btn) btn.className = 'w-full flex items-center gap-4 px-4 py-3 rounded-xl transition text-zinc-400 hover:bg-zinc-900 hover:text-white font-medium text-left text-sm';
   });
   if (b) b.className = 'w-full flex items-center gap-4 px-4 py-3 rounded-xl transition bg-[#D32F2F] text-white font-medium shadow-md text-left text-sm';

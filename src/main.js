@@ -1,6 +1,6 @@
 // Importamos la base de datos desde tu archivo de configuración
 import { db } from './firebase.js';
-import { collection, addDoc, serverTimestamp, onSnapshot, query, where, doc, setDoc, getDoc, deleteDoc, updateDoc } from 'firebase/firestore';
+import { collection, addDoc, onSnapshot, query, where, doc, setDoc, getDoc, deleteDoc, updateDoc } from 'firebase/firestore';
 import './admin.js';
 
 // Referencias DOM (Barra Lateral de index.html)
@@ -17,6 +17,7 @@ const btnCalculadoraLibre = document.getElementById('btn-calculadora-libre');
 const btnEstadisticas = document.getElementById('btn-estadisticas');
 const btnRoles = document.getElementById('btn-roles'); // Productos / Inventario
 const btnSeguridad = document.getElementById('btn-seguridad'); // Seguridad
+const btnAbonos = document.getElementById('btn-abonos'); // Cuentas por Cobrar / Abonos
 const offlineBanner = document.getElementById('offline-banner');
 
 // ESTADO GLOBAL EN MEMORIA (Sincronizado en Tiempo Real con Firebase)
@@ -70,7 +71,7 @@ onSnapshot(collection(db, "productos"), (snapshot) => {
 
 async function marcarActividadDB() {
   try {
-    await setDoc(refActividadDB, { ultimaActividad: serverTimestamp() }, { merge: true });
+    await setDoc(refActividadDB, { ultimaActividad: new Date().toISOString() }, { merge: true });
   } catch (err) {
     console.error('Error al actualizar actividad en DB:', err);
   }
@@ -127,8 +128,91 @@ const actualizarEstadoConexion = () => {
     }
   } else {
     if (offlineBanner) offlineBanner.classList.add('hidden');
+    // Al reconectar, intentar sincronizar pendientes guardados en localStorage
+    sincronizarPendientesEnLocal();
   }
 };
+
+// Sincronizar pendientes locales (ventas, caja, abonos) a Firestore cuando haya conexión
+async function sincronizarPendientesEnLocal() {
+  if (!navigator.onLine) return;
+  try {
+    const ventasPend = JSON.parse(localStorage.getItem('ventas_offline_pending') || '[]');
+    const cajaPend = JSON.parse(localStorage.getItem('caja_offline_pending') || '[]');
+    const abonosPend = JSON.parse(localStorage.getItem('abonos_offline_pending') || '[]');
+
+    const pushArray = async (arr, collectionName, transformFn) => {
+      const remaining = [];
+      for (const item of arr) {
+        try {
+          const docData = transformFn ? transformFn(item) : item;
+          await addDoc(collection(db, collectionName), docData);
+        } catch (e) {
+          console.error('Falló sincronizar', collectionName, e);
+          remaining.push(item);
+        }
+      }
+      return remaining;
+    };
+
+    const ventasRemaining = await pushArray(ventasPend, 'ventas', (item) => {
+      const copy = { ...item };
+      delete copy.creadoLocal;
+      // Asegurar montoTotal/monto coherentes
+      if (!copy.montoTotal && copy.monto) copy.montoTotal = copy.monto;
+      copy.fecha = new Date().toISOString();
+      return copy;
+    });
+
+    const cajaRemaining = await pushArray(cajaPend, 'caja', (item) => ({ ...item, fecha: new Date().toISOString() }));
+
+    const abonosRemaining = await pushArray(abonosPend, 'caja', (item) => ({ tipo: 'abono', ventaId: item.ventaId, monto: item.monto, descripcion: item.descripcion || `Abono offline venta ${item.ventaId}`, fecha: new Date().toISOString() }));
+
+    localStorage.setItem('ventas_offline_pending', JSON.stringify(ventasRemaining));
+    localStorage.setItem('caja_offline_pending', JSON.stringify(cajaRemaining));
+    localStorage.setItem('abonos_offline_pending', JSON.stringify(abonosRemaining));
+
+    // Actualizar badge y notificar al usuario según el resultado
+    actualizarBadgePendientes();
+
+    const totalRemaining = (ventasRemaining.length + cajaRemaining.length + abonosRemaining.length);
+    if (totalRemaining === 0) {
+      mostrarSnackbarMensaje('Pendientes sincronizados correctamente', 'success', 3000);
+    } else {
+      mostrarSnackbarMensaje('Algunos pendientes no se pudieron sincronizar. Se reintentará.', 'info', 4000);
+    }
+  } catch (e) {
+    console.error('Error sincronizando pendientes', e);
+  }
+}
+
+// Indicador visual de pendientes en localStorage
+function obtenerConteoPendientesLocal() {
+  try {
+    const ventas = JSON.parse(localStorage.getItem('ventas_offline_pending') || '[]');
+    const caja = JSON.parse(localStorage.getItem('caja_offline_pending') || '[]');
+    const abonos = JSON.parse(localStorage.getItem('abonos_offline_pending') || '[]');
+    return (ventas.length || 0) + (caja.length || 0) + (abonos.length || 0);
+  } catch (e) {
+    return 0;
+  }
+}
+
+function actualizarBadgePendientes() {
+  const badge = document.getElementById('badge-pendientes');
+  if (!badge) return;
+  const cnt = obtenerConteoPendientesLocal();
+  if (cnt > 0) {
+    badge.textContent = String(cnt);
+    badge.classList.remove('hidden');
+  } else {
+    badge.classList.add('hidden');
+  }
+}
+
+// Escuchar cambios en localStorage desde otras pestañas
+window.addEventListener('storage', () => { actualizarBadgePendientes(); });
+
 if (btnToggleSidebar && sidebar) {
   btnToggleSidebar.addEventListener('click', () => {
     if (sidebar.classList.contains('-translate-x-full')) {
@@ -144,6 +228,11 @@ if (sidebarBackdrop) sidebarBackdrop.addEventListener('click', cerrarSidebarMobi
 window.addEventListener('resize', resetSidebarResponsive);
 window.addEventListener('online', actualizarEstadoConexion);
 window.addEventListener('offline', actualizarEstadoConexion);
+
+// Intentar sincronizar al cargar si hay conexión
+if (navigator.onLine) sincronizarPendientesEnLocal();
+// Mostrar badge al cargar
+actualizarBadgePendientes();
 
 // =======================================================
 // PANTALLA 1: PANEL PRINCIPAL (CON HISTORIAL REPARADO)
@@ -198,9 +287,10 @@ function cargarPantallaUnificada() {
           
           <div class="space-y-2">
             <label class="block text-[10px] font-bold text-zinc-500 uppercase">Método de Pago</label>
-            <div class="grid grid-cols-2 gap-2">
+            <div class="grid grid-cols-3 gap-2">
               <button id="pago-efectivo" class="py-2.5 rounded-xl font-bold text-xs bg-[#D32F2F] text-white border border-transparent transition-all">EFECTIVO</button>
               <button id="pago-tarjeta" class="py-2.5 rounded-xl font-bold text-xs bg-zinc-800 text-zinc-400 border border-zinc-700 transition-all">TARJETA</button>
+              <button id="pago-abono" class="py-2.5 rounded-xl font-bold text-xs bg-amber-500 text-white border border-transparent transition-all">ABONO</button>
             </div>
           </div>
 
@@ -404,6 +494,7 @@ let metodoPagoActual = "Efectivo";
 function configurarEventosPago() {
   const btnEfectivo = document.getElementById('pago-efectivo');
   const btnTarjeta = document.getElementById('pago-tarjeta');
+  const btnAbono = document.getElementById('pago-abono');
   const moduloCambio = document.getElementById('modulo-cambio');
   const inputMonto = document.getElementById('monto-recibido');
   const btnFinalizar = document.getElementById('btn-finalizar-compra');
@@ -414,6 +505,7 @@ function configurarEventosPago() {
     metodoPagoActual = "Efectivo";
     btnEfectivo.className = "py-2.5 rounded-xl font-bold text-xs bg-[#D32F2F] text-white border border-transparent transition-all";
     btnTarjeta.className = "py-2.5 rounded-xl font-bold text-xs bg-zinc-800 text-zinc-400 border border-zinc-700 transition-all";
+    if (btnAbono) btnAbono.className = "py-2.5 rounded-xl font-bold text-xs bg-amber-500 text-white border border-transparent transition-all";
     moduloCambio.classList.remove('hidden');
     const total = carrito.reduce((sum, i) => sum + (i.precio * i.cantidad), 0);
     calcularCambioCalculadora(total);
@@ -423,8 +515,84 @@ function configurarEventosPago() {
     metodoPagoActual = "Tarjeta";
     btnTarjeta.className = "py-2.5 rounded-xl font-bold text-xs bg-blue-600 text-white border border-transparent transition-all";
     btnEfectivo.className = "py-2.5 rounded-xl font-bold text-xs bg-zinc-800 text-zinc-400 border border-zinc-700 transition-all";
+    if (btnAbono) btnAbono.className = "py-2.5 rounded-xl font-bold text-xs bg-amber-500 text-white border border-transparent transition-all";
     moduloCambio.classList.add('hidden');
   };
+
+  if (btnAbono) {
+    btnAbono.onclick = async () => {
+      metodoPagoActual = 'Abono';
+      // Abrir modal de abonos y obtener cliente + abono inicial
+      const total = carrito.reduce((sum, i) => sum + (i.precio * i.cantidad), 0);
+      try {
+        const resultado = await inicializarModalAbonos(total);
+        if (!resultado || !resultado.abonoInicial) return; // cancelado o inválido
+        const { cliente, abonoInicial } = resultado;
+
+        // Construir objeto venta con estado pendiente
+        const ventaObj = {
+          tipo: carrito.some(i => i.nombre.toLowerCase().includes('membresia')) ? 'membresia' : 'producto',
+          concepto: carrito.map(i => `${i.cantidad}x ${i.nombre}`).join(', '),
+          montoTotal: total,
+          montoPagado: Number(abonoInicial),
+          saldoPendiente: Number((total - Number(abonoInicial)).toFixed(2)),
+          clienteNombre: cliente || null,
+          historialAbonos: [{ fecha: new Date().toISOString(), monto: Number(abonoInicial) }],
+          estadoPago: 'pendiente',
+          productosArr: carrito.map(i => ({ id: i.id, nombre: i.nombre, cantidad: i.cantidad })),
+          fecha: new Date().toISOString()
+        };
+
+        // Guardar venta y registrar en caja solo el abono inicial
+        try {
+          const ventaRef = await addDoc(collection(db, 'ventas'), ventaObj);
+          await addDoc(collection(db, 'caja'), { tipo: 'abono', ventaId: ventaRef.id, monto: Number(abonoInicial), descripcion: `Abono inicial ${cliente || ''}`, fecha: new Date().toISOString() });
+          // Descontar stock
+          for (const item of carrito) {
+            const prodRef = doc(db, 'productos', item.id);
+            const snapshot = await getDoc(prodRef);
+            if (snapshot.exists() && snapshot.data().tipo !== 'servicio') {
+              const stockActual = Number(snapshot.data().stock || 0);
+              await updateDoc(prodRef, { stock: Math.max(0, stockActual - Number(item.cantidad)) });
+            }
+          }
+          await marcarActividadDB();
+          mostrarSnackbarMensaje('Venta registrada a plazos. Abono inicial registrado en caja.', 'success', 3000);
+          carrito = [];
+          if (inputMonto) inputMonto.value = '';
+          renderizarCarrito();
+        } catch (errSave) {
+          console.error('Error guardando venta de abono en la nube, guardando en localStorage...', errSave);
+          // fallback localStorage
+          const pendientes = JSON.parse(localStorage.getItem('ventas_offline_pending' ) || '[]');
+          pendientes.push({ ...ventaObj, creadoLocal: new Date().toISOString() });
+          localStorage.setItem('ventas_offline_pending', JSON.stringify(pendientes));
+          // Actualizar badge de pendientes
+          if (typeof actualizarBadgePendientes === 'function') actualizarBadgePendientes();
+          // registrar caja localmente también
+          const cajaPend = JSON.parse(localStorage.getItem('caja_offline_pending') || '[]');
+          cajaPend.push({ tipo: 'abono', monto: Number(abonoInicial), descripcion: `Abono inicial ${cliente || ''}`, fecha: new Date().toISOString() });
+          localStorage.setItem('caja_offline_pending', JSON.stringify(cajaPend));
+          if (typeof actualizarBadgePendientes === 'function') actualizarBadgePendientes();
+          // aplicar descuento local de stock (reflejar inmediatamente en la UI)
+          try {
+            for (const item of carrito) {
+              const prod = productosVentaRapida.find(p => p.id === item.id);
+              if (prod && prod.stock !== undefined && prod.stock !== null) {
+                prod.stock = Math.max(0, Number(prod.stock || 0) - Number(item.cantidad));
+              }
+            }
+            if (typeof renderizarBotonesPOS === 'function') renderizarBotonesPOS();
+          } catch (e) { console.warn('No se pudo aplicar descuento local de stock:', e); }
+
+          carrito = [];
+          renderizarCarrito();
+          mostrarSnackbarMensaje('Venta guardada localmente (offline). Se sincronizará cuando haya conexión.', 'info', 4000);
+        }
+
+      } catch (e) { console.error(e); mostrarSnackbarMensaje('Operación de abono cancelada o error', 'error', 2500); }
+    };
+  }
 
   inputMonto.oninput = () => {
     const total = carrito.reduce((sum, i) => sum + (i.precio * i.cantidad), 0);
@@ -455,7 +623,7 @@ function configurarEventosPago() {
         monto: total,
         metodoPago: metodoPagoActual,
         productosArr: carrito.map(i => ({ id: i.id, nombre: i.nombre, cantidad: i.cantidad })),
-        fecha: serverTimestamp()
+        fecha: new Date().toISOString()
       });
 
       for (const item of carrito) {
@@ -537,6 +705,368 @@ function mostrarConfirmacion(texto) {
 
 // Exponer confirmación personalizada
 window.mostrarConfirmacion = mostrarConfirmacion;
+
+// MÓDULO: Cobros a Plazos / Abonos (Cuentas por Cobrar)
+// inicializarModalAbonos(totalCarrito, callbackConfirmar) -> Promise resolves { cliente, abonoInicial }
+async function inicializarModalAbonos(totalCarrito, callbackConfirmar) {
+  // Intentar usar modal ya presente en index.html (#modal-abono)
+  const modal = document.getElementById('modal-abono');
+  return new Promise((resolve) => {
+    if (!modal) {
+      // Fallback: crear un modal temporal (siempre mejor que prompt)
+      const overlay = document.createElement('div');
+      overlay.className = 'fixed inset-0 z-60 bg-black/60 flex items-center justify-center p-4';
+      overlay.innerHTML = `
+        <div class="bg-zinc-900 text-white p-5 rounded-2xl w-full max-w-sm">
+          <h3 class="text-lg font-bold mb-2">Venta a Plazos</h3>
+          <label class="block text-xs text-zinc-300 mb-1">Nombre del cliente (opcional)</label>
+          <input id="__tmp_cliente_input" type="text" class="w-full p-2 rounded mb-3 text-sm text-black" />
+          <label class="block text-xs text-zinc-300 mb-1">Abono inicial (Efectivo)</label>
+          <input id="__tmp_monto_input" type="number" min="0" step="0.01" class="w-full p-2 rounded mb-3 text-sm text-black" />
+          <div class="flex gap-2 justify-end"><button id="__tmp_cancel" class="px-3 py-2 rounded-xl bg-zinc-700">Cancelar</button><button id="__tmp_ok" class="px-3 py-2 rounded-xl bg-amber-500 text-black">Aceptar</button></div>
+        </div>`;
+      document.body.appendChild(overlay);
+      const inCliente = overlay.querySelector('#__tmp_cliente_input');
+      const inMonto = overlay.querySelector('#__tmp_monto_input');
+      const btnOk = overlay.querySelector('#__tmp_ok');
+      const btnCancel = overlay.querySelector('#__tmp_cancel');
+      btnCancel.onclick = () => { overlay.remove(); resolve(null); };
+      btnOk.onclick = () => {
+        const cliente = inCliente.value.trim();
+        const abono = Number(inMonto.value);
+        if (isNaN(abono) || abono <= 0 || abono > totalCarrito) { mostrarSnackbarMensaje('Abono inválido', 'error', 2200); return; }
+        overlay.remove(); if (callbackConfirmar && typeof callbackConfirmar === 'function') callbackConfirmar({ cliente, abonoInicial: abono }); resolve({ cliente, abonoInicial: abono });
+      };
+      return;
+    }
+
+    // Si existe modal en DOM, intentar usar campos internos (se asume estructura mínima)
+    modal.classList.remove('hidden');
+    const inputCliente = modal.querySelector('#abono-cliente') || modal.querySelector('input[name="abono-cliente"]');
+    const inputAbono = modal.querySelector('#abono-monto') || modal.querySelector('input[name="abono-monto"]');
+    const totalDisplay = modal.querySelector('#abono-total');
+    const saldoDisplay = modal.querySelector('#abono-saldo');
+    const btnAceptar = modal.querySelector('#abono-aceptar');
+    const btnCancelar = modal.querySelector('#abono-cancelar');
+    const btnCerrar = modal.querySelector('#btn-cerrar-modal-abono');
+
+    if (totalDisplay) totalDisplay.textContent = `$${totalCarrito.toFixed(2)}`;
+    if (saldoDisplay) saldoDisplay.textContent = `$${totalCarrito.toFixed(2)}`;
+    if (inputAbono) inputAbono.value = '';
+
+    const limpiarListeners = () => {
+      if (inputAbono) inputAbono.oninput = null;
+      if (btnAceptar) { btnAceptar.onclick = null; btnAceptar.disabled = false; btnAceptar.classList.remove('opacity-50','pointer-events-none'); }
+      if (btnCancelar) btnCancelar.onclick = null;
+      if (btnCerrar) btnCerrar.onclick = null;
+    };
+
+    const validarYActualizar = () => {
+      if (!btnAceptar) return;
+      const v = Number(inputAbono ? inputAbono.value : 0);
+      const valido = !(isNaN(v) || v <= 0 || v > totalCarrito);
+      if (!valido) {
+        btnAceptar.disabled = true;
+        btnAceptar.classList.add('opacity-50','pointer-events-none');
+      } else {
+        btnAceptar.disabled = false;
+        btnAceptar.classList.remove('opacity-50','pointer-events-none');
+      }
+    };
+
+    if (inputAbono) {
+      inputAbono.oninput = () => {
+        const v = Number(inputAbono.value || 0);
+        const saldo = Math.max(0, totalCarrito - (isNaN(v) ? 0 : v));
+        if (saldoDisplay) saldoDisplay.textContent = `$${saldo.toFixed(2)}`;
+        validarYActualizar();
+      };
+    }
+
+    if (btnCancelar) btnCancelar.onclick = () => { modal.classList.add('hidden'); limpiarListeners(); resolve(null); };
+    if (btnCerrar) btnCerrar.onclick = () => { modal.classList.add('hidden'); limpiarListeners(); resolve(null); };
+    if (btnAceptar) {
+      // Inicialmente deshabilitar hasta validar
+      btnAceptar.disabled = true; btnAceptar.classList.add('opacity-50','pointer-events-none');
+      btnAceptar.onclick = () => {
+        const cliente = inputCliente ? inputCliente.value.trim() : '';
+        const abono = inputAbono ? Number(inputAbono.value) : 0;
+        if (isNaN(abono) || abono <= 0 || abono > totalCarrito) { mostrarSnackbarMensaje('Abono inválido', 'error', 2500); return; }
+        modal.classList.add('hidden'); limpiarListeners(); if (callbackConfirmar && typeof callbackConfirmar === 'function') callbackConfirmar({ cliente, abonoInicial: abono }); resolve({ cliente, abonoInicial: abono });
+      };
+    }
+  });
+}
+
+// Pantalla: Cuentas por Cobrar
+function cargarPantallaCuentasPorCobrar() {
+  apagarEscuchasActivos();
+  activarBoton(btnAbonos);
+  contenedorPantallas.innerHTML = `
+    <div class="p-6 bg-white rounded-3xl border border-zinc-200">
+      <h2 class="text-xl font-black">Cuentas por Cobrar</h2>
+      <p class="text-xs text-zinc-500">Listado de ventas con saldo pendiente.</p>
+      <div class="mt-4 flex items-center gap-3">
+        <input id="input-buscar-abonos" type="search" placeholder="Buscar por cliente..." class="w-full px-3 py-2 rounded-xl border text-sm outline-none" />
+      </div>
+      <div class="overflow-auto mt-4"><table class="w-full text-left text-xs"><thead><tr class="text-zinc-400 border-b"><th>Cliente</th><th>Concepto</th><th class="text-right">Total</th><th class="text-right">Pagado</th><th class="text-right">Saldo</th><th class="text-right">Acción</th></tr></thead><tbody id="tabla-abonos-list"></tbody></table></div>
+    </div>`;
+
+  const tabla = document.getElementById('tabla-abonos-list');
+  if (!tabla) return;
+  const qPendientes = query(collection(db, 'ventas'), where('estadoPago', '==', 'pendiente'));
+  // listener en tiempo real para pendientes
+  const unsub = onSnapshot(qPendientes, (snapshot) => {
+    const rows = [];
+    snapshot.forEach(docSnap => {
+      const d = docSnap.data();
+      const id = docSnap.id;
+      rows.push({ id, ...d });
+    });
+
+    const inputBuscar = document.getElementById('input-buscar-abonos');
+    let localVentas = [];
+    try { localVentas = JSON.parse(localStorage.getItem('ventas_offline_pending') || '[]'); } catch (eLocal) { console.warn('No se pudo leer ventas_offline_pending', eLocal); }
+
+    const getTimestamp = (r) => {
+      if (!r) return 0;
+      if (r.fecha && typeof r.fecha.toDate === 'function') return r.fecha.toDate().getTime();
+      if (r.fecha && typeof r.fecha === 'string') return Date.parse(r.fecha) || 0;
+      if (r.creadoLocal) return Date.parse(r.creadoLocal) || 0;
+      if (r.createdAt) return Date.parse(r.createdAt) || 0;
+      return 0;
+    };
+
+    const buildHtml = () => {
+      const term = inputBuscar && inputBuscar.value ? inputBuscar.value.trim().toLowerCase() : '';
+      // filter and sort remote rows
+      const filteredRemote = rows.filter(r => {
+        const cliente = (r.clienteNombre || r.cliente || '').toString().toLowerCase();
+        const concepto = (r.concepto || r.tipo || '').toString().toLowerCase();
+        return !term || cliente.includes(term) || concepto.includes(term);
+      }).sort((a,b) => getTimestamp(b) - getTimestamp(a));
+
+      // filter and sort local
+      const filteredLocal = Array.isArray(localVentas) ? localVentas.filter(lv => {
+        const cliente = (lv.clienteNombre || lv.cliente || '').toString().toLowerCase();
+        const concepto = (lv.concepto || lv.tipo || '').toString().toLowerCase();
+        return !term || cliente.includes(term) || concepto.includes(term);
+      }).sort((a,b) => {
+        const ta = Date.parse(a.creadoLocal || a.fecha || '') || 0;
+        const tb = Date.parse(b.creadoLocal || b.fecha || '') || 0;
+        return tb - ta;
+      }) : [];
+
+      let html = '';
+      if (!filteredRemote.length && !filteredLocal.length) {
+        html = `<tr><td colspan="6" class="py-4 text-center text-zinc-400">No hay cuentas por cobrar.</td></tr>`;
+      } else {
+        html = filteredRemote.map(r => `
+          <tr class="border-b hover:bg-zinc-50"><td class="py-3 pl-2 font-bold text-zinc-800">${r.clienteNombre || 'Sin cliente'}</td><td>${r.concepto || r.tipo || ''}</td><td class="py-3 text-right font-black">$${(r.montoTotal||0).toFixed(2)}</td><td class="py-3 text-right">$${(r.montoPagado||0).toFixed(2)}</td><td class="py-3 text-right text-red-600">$${(r.saldoPendiente||0).toFixed(2)}</td><td class="py-3 text-right pr-2"><button data-id="${r.id}" data-saldo="${(r.saldoPendiente||0).toFixed(2)}" class="btn-registrar-abono bg-emerald-600 text-white px-3 py-1 rounded-lg text-[12px]">Registrar Abono</button></td></tr>
+        `).join('');
+
+        if (filteredLocal.length) html += `<tr><td colspan="6" class="py-2 text-xs text-zinc-400">&nbsp;</td></tr>`;
+
+        filteredLocal.forEach((lv, idx) => {
+          const cliente = lv.clienteNombre || lv.cliente || 'Sin cliente';
+          const concepto = lv.concepto || lv.tipo || '';
+          const montoTotal = Number(lv.montoTotal || lv.monto || 0).toFixed(2);
+          const montoPagado = Number(lv.montoPagado || 0).toFixed(2);
+          const saldo = Number(lv.saldoPendiente || (Number(lv.montoTotal || lv.monto || 0) - Number(lv.montoPagado || 0))).toFixed(2);
+          html += `
+            <tr class="border-b hover:bg-zinc-50 opacity-90"><td class="py-3 pl-2 font-bold text-zinc-800">${cliente} <span class="ml-2 text-[10px] text-amber-500">(offline)</span></td><td>${concepto}</td><td class="py-3 text-right font-black">$${montoTotal}</td><td class="py-3 text-right">$${montoPagado}</td><td class="py-3 text-right text-red-600">$${saldo}</td><td class="py-3 text-right pr-2"><button data-local-index="${idx}" data-saldo="${saldo}" class="btn-registrar-abono-local bg-amber-600 text-white px-3 py-1 rounded-lg text-[12px]">Registrar Abono</button></td></tr>
+          `;
+        });
+      }
+
+      tabla.innerHTML = html;
+
+      // Handlers para ventas remotas
+      tabla.querySelectorAll('.btn-registrar-abono').forEach(btn => {
+        btn.onclick = () => {
+          const id = btn.getAttribute('data-id'); const saldo = Number(btn.getAttribute('data-saldo'));
+          if (window.registrarAbonoCliente) window.registrarAbonoCliente(id, saldo);
+        };
+      });
+
+      // Handlers para ventas offline locales
+      tabla.querySelectorAll('.btn-registrar-abono-local').forEach(btn => {
+        btn.onclick = () => {
+          const idx = Number(btn.getAttribute('data-local-index'));
+          const saldo = Number(btn.getAttribute('data-saldo'));
+          if (window.registrarAbonoClienteLocal) window.registrarAbonoClienteLocal(idx, saldo);
+        };
+      });
+    };
+
+    if (inputBuscar) {
+      inputBuscar.oninput = buildHtml;
+    }
+
+    buildHtml();
+  });
+  // mantener referencia para poder desuscribir cuando cambie pantalla
+  desuscribirVentas = unsub;
+}
+
+// Exponer función global para registrar abonos sobre una venta existente
+// Usar el modal existente para pedir el monto del abono en lugar de prompt (prompt() puede estar deshabilitado)
+async function pedirMontoAbono(saldoPendiente) {
+  return new Promise((resolve) => {
+    const modal = document.getElementById('modal-abono');
+    if (!modal) {
+      // Fallback: crear un modal mínimo en DOM para pedir monto (no usar prompt())
+      const overlay = document.createElement('div');
+      overlay.className = 'fixed inset-0 z-60 bg-black/60 flex items-center justify-center p-4';
+      overlay.innerHTML = `
+        <div class="bg-white p-4 rounded-2xl w-full max-w-sm">
+          <p class="text-sm text-zinc-700 mb-3">Saldo pendiente: <strong>$${Number(saldoPendiente).toFixed(2)}</strong></p>
+          <input id="__tmp_abono_input" type="number" min="0" step="0.01" class="w-full p-2 border rounded mb-3 text-sm" />
+          <div class="flex gap-2 justify-end">
+            <button id="__tmp_abono_cancel" class="px-3 py-2 rounded-xl bg-zinc-200">Cancelar</button>
+            <button id="__tmp_abono_ok" class="px-3 py-2 rounded-xl bg-amber-600 text-white">Aceptar</button>
+          </div>
+        </div>`;
+      document.body.appendChild(overlay);
+      const inputTmp = overlay.querySelector('#__tmp_abono_input');
+      const ok = overlay.querySelector('#__tmp_abono_ok');
+      const cancel = overlay.querySelector('#__tmp_abono_cancel');
+      cancel.onclick = () => { overlay.remove(); resolve(null); };
+      ok.onclick = () => {
+        const v = Number(inputTmp.value);
+        if (isNaN(v) || v <= 0 || v > Number(saldoPendiente)) { mostrarSnackbarMensaje('Abono inválido', 'error', 2200); return; }
+        overlay.remove(); resolve(v);
+      };
+      return;
+    }
+
+    // Reusar el modal: mostrar solo la sección de monto y deshabilitar el cliente
+    modal.classList.remove('hidden');
+    const inputCliente = modal.querySelector('#abono-cliente');
+    const inputAbono = modal.querySelector('#abono-monto');
+    const totalDisplay = modal.querySelector('#abono-total');
+    const saldoDisplay = modal.querySelector('#abono-saldo');
+    const btnAceptar = modal.querySelector('#abono-aceptar');
+    const btnCancelar = modal.querySelector('#abono-cancelar');
+    const btnCerrar = modal.querySelector('#btn-cerrar-modal-abono');
+
+    // Preparar vista: ocultar cliente para este uso
+    if (inputCliente) { inputCliente.dataset._display = inputCliente.style.display || ''; inputCliente.style.display = 'none'; }
+    if (totalDisplay) totalDisplay.textContent = `$${Number(saldoPendiente).toFixed(2)}`;
+    if (saldoDisplay) saldoDisplay.textContent = `$${Number(saldoPendiente).toFixed(2)}`;
+    if (inputAbono) inputAbono.value = '';
+
+    const limpiar = () => {
+      if (inputCliente) inputCliente.style.display = inputCliente.dataset._display || '';
+      if (inputAbono) inputAbono.oninput = null;
+      if (btnAceptar) { btnAceptar.onclick = null; btnAceptar.disabled = false; btnAceptar.classList.remove('opacity-50','pointer-events-none'); }
+      if (btnCancelar) btnCancelar.onclick = null;
+      if (btnCerrar) btnCerrar.onclick = null;
+    };
+
+    const validar = () => {
+      if (!btnAceptar || !inputAbono) return;
+      const v = Number(inputAbono.value || 0);
+      const ok = !(isNaN(v) || v <= 0 || v > Number(saldoPendiente));
+      if (!ok) { btnAceptar.disabled = true; btnAceptar.classList.add('opacity-50','pointer-events-none'); }
+      else { btnAceptar.disabled = false; btnAceptar.classList.remove('opacity-50','pointer-events-none'); }
+    };
+
+    if (inputAbono) inputAbono.oninput = () => { const v = Number(inputAbono.value || 0); if (saldoDisplay) saldoDisplay.textContent = `$${Math.max(0, (Number(saldoPendiente) - v)).toFixed(2)}`; validar(); };
+
+    if (btnCancelar) btnCancelar.onclick = () => { modal.classList.add('hidden'); limpiar(); resolve(null); };
+    if (btnCerrar) btnCerrar.onclick = () => { modal.classList.add('hidden'); limpiar(); resolve(null); };
+
+    if (btnAceptar) {
+      btnAceptar.disabled = true; btnAceptar.classList.add('opacity-50','pointer-events-none');
+      btnAceptar.onclick = () => {
+        const val = inputAbono ? Number(inputAbono.value) : 0;
+        if (isNaN(val) || val <= 0 || val > Number(saldoPendiente)) { mostrarSnackbarMensaje('Abono inválido', 'error', 2200); return; }
+        modal.classList.add('hidden'); limpiar(); resolve(val);
+      };
+    }
+  });
+}
+window.registrarAbonoCliente = async function(ventaId, saldoPendiente) {
+  try {
+    const abono = await pedirMontoAbono(saldoPendiente);
+    if (abono == null) return;
+
+    const ventaRef = doc(db, 'ventas', ventaId);
+    const ventaSnap = await getDoc(ventaRef);
+    if (!ventaSnap.exists()) { mostrarSnackbarMensaje('Venta no encontrada', 'error', 2200); return; }
+    const data = ventaSnap.data();
+    const nuevoMontoPagado = Number(data.montoPagado || 0) + abono;
+    const nuevoSaldo = Number((Number(data.montoTotal || data.monto || 0) - nuevoMontoPagado).toFixed(2));
+    const nuevoHist = Array.isArray(data.historialAbonos) ? [...data.historialAbonos] : (data.historialAbonos ? [data.historialAbonos] : []);
+    nuevoHist.push({ fecha: new Date().toISOString(), monto: abono });
+
+    const updates = { montoPagado: nuevoMontoPagado, saldoPendiente: Math.max(0, nuevoSaldo), historialAbonos: nuevoHist };
+    if (nuevoSaldo <= 0) updates.estadoPago = 'liquidado';
+
+    try {
+      await updateDoc(ventaRef, updates);
+      // registrar en caja el ingreso por abono
+      await addDoc(collection(db, 'caja'), { tipo: 'abono', ventaId, monto: abono, descripcion: `Abono venta ${ventaId}`, fecha: new Date().toISOString() });
+      await marcarActividadDB();
+      mostrarSnackbarMensaje('Abono registrado correctamente', 'success', 2500);
+    } catch (e) {
+      console.error('Error actualizando venta/registrando caja en nube, guardando abono en localStorage', e);
+      const pend = JSON.parse(localStorage.getItem('abonos_offline_pending') || '[]');
+    pend.push({ ventaId, monto: abono, fecha: new Date().toISOString(), error: (e && e.message) ? e.message : String(e) });
+      localStorage.setItem('abonos_offline_pending', JSON.stringify(pend));
+      if (typeof actualizarBadgePendientes === 'function') actualizarBadgePendientes();
+    // Mostrar mensaje más informativo para saber por qué falló
+    const errMsg = (e && e.message) ? e.message : 'Error desconocido al conectar con Firestore';
+    mostrarSnackbarMensaje(`Abono guardado localmente. Error: ${errMsg}`, 'info', 5000);
+    }
+  } catch (e) { console.error(e); mostrarSnackbarMensaje('Error al registrar abono', 'error', 2200); }
+};
+
+// Registrar abono para ventas guardadas localmente (ventas_offline_pending)
+window.registrarAbonoClienteLocal = async function(localIndex, saldoPendiente) {
+  try {
+    localIndex = Number(localIndex);
+    if (!Number.isInteger(localIndex) || localIndex < 0) { mostrarSnackbarMensaje('Índice inválido', 'error', 2200); return; }
+
+    const valor = await pedirMontoAbono(saldoPendiente);
+    if (valor === null || valor === undefined) return;
+    const abono = Number(valor);
+    if (isNaN(abono) || abono <= 0) { mostrarSnackbarMensaje('Monto inválido', 'error', 2200); return; }
+
+    const ventasPend = JSON.parse(localStorage.getItem('ventas_offline_pending') || '[]');
+    const abonosPend = JSON.parse(localStorage.getItem('abonos_offline_pending') || '[]');
+    const cajaPend = JSON.parse(localStorage.getItem('caja_offline_pending') || '[]');
+
+    if (!Array.isArray(ventasPend) || !ventasPend[localIndex]) { mostrarSnackbarMensaje('Venta local no encontrada', 'error', 2200); return; }
+
+    const venta = ventasPend[localIndex];
+    // Asegurar campos numéricos
+    venta.montoPagado = Number(venta.montoPagado || 0) + abono;
+    const totalVenta = Number(venta.montoTotal || venta.monto || 0);
+    venta.saldoPendiente = Number(Math.max(0, totalVenta - Number(venta.montoPagado || 0)).toFixed(2));
+    venta.historialAbonos = Array.isArray(venta.historialAbonos) ? venta.historialAbonos : (venta.historialAbonos ? [venta.historialAbonos] : []);
+    venta.historialAbonos.push({ fecha: new Date().toISOString(), monto: abono });
+
+    // Registrar abono y caja localmente
+    abonosPend.push({ ventaLocalIndex: localIndex, monto: abono, fecha: new Date().toISOString(), cliente: venta.clienteNombre || venta.cliente || null });
+    cajaPend.push({ tipo: 'abono', ventaLocalIndex: localIndex, monto: abono, descripcion: `Abono local ${venta.clienteNombre || ''}`, fecha: new Date().toISOString() });
+
+    // Guardar cambios
+    localStorage.setItem('ventas_offline_pending', JSON.stringify(ventasPend));
+    localStorage.setItem('abonos_offline_pending', JSON.stringify(abonosPend));
+    localStorage.setItem('caja_offline_pending', JSON.stringify(cajaPend));
+
+    if (typeof actualizarBadgePendientes === 'function') actualizarBadgePendientes();
+    mostrarSnackbarMensaje('Abono registrado localmente. Se sincronizará cuando haya conexión.', 'info', 3000);
+
+    // Volver a renderizar la pantalla de cuentas por cobrar si está abierta
+    cargarPantallaCuentasPorCobrar();
+  } catch (e) {
+    console.error('Error registrando abono local:', e);
+    mostrarSnackbarMensaje('Error registrando abono local', 'error', 2200);
+  }
+};
 
 // Sincronizar precios de servicios desde Firestore para que cambios en admin.js
 // (configuracion/preciosServicios) actualicen las membresías en pantalla.
@@ -733,7 +1263,7 @@ function cargarPantallaMembresiasMaster() {
         const ejecutarRenovacion = async (tipo, precio) => {
           const fNewVence = new Date(); fNewVence.setDate(fNewVence.getDate() + (tipo === 'semana' ? 7 : 30));
           await setDoc(doc(db, "clientes", dbId), { nombre, telefono, tipoMembresia: tipo, fechaVencimiento: fNewVence });
-          await addDoc(collection(db, "ventas"), { tipo: "membresia", concepto: `Renovación ${tipo.toUpperCase()}: ${nombre}`, monto: precio, metodoPago: "Efectivo", fecha: serverTimestamp() });
+          await addDoc(collection(db, "ventas"), { tipo: "membresia", concepto: `Renovación ${tipo.toUpperCase()}: ${nombre}`, monto: precio, metodoPago: "Efectivo", fecha: new Date().toISOString() });
           await marcarActividadDB();
           document.getElementById('modal-reincorporar').classList.add('hidden');
           mostrarSnackbarMensaje('Membresía renovada', 'success', 2500);
@@ -762,7 +1292,7 @@ function cargarPantallaMembresiasMaster() {
   const registrarNuevaMembresia = async (nombre, tel, tipo, precio, fInicioInput, fVenceInput) => {
     try {
       await addDoc(collection(db, "clientes"), { nombre, telefono: "52" + tel, tipoMembresia: tipo, fechaVencimiento: new Date(fVenceInput + "T23:59:59") });
-      await addDoc(collection(db, "ventas"), { tipo: "membresia", concepto: `Inscripción ${tipo.toUpperCase()}: ${nombre}`, monto: precio, metodoPago: "Efectivo", fecha: serverTimestamp() });
+      await addDoc(collection(db, "ventas"), { tipo: "membresia", concepto: `Inscripción ${tipo.toUpperCase()}: ${nombre}`, monto: precio, metodoPago: "Efectivo", fecha: new Date().toISOString() });
       await marcarActividadDB();
       mostrarSnackbarMensaje('¡Guardado!', 'success', 2500);
     } catch (e) { console.error(e); }
@@ -941,7 +1471,7 @@ document.querySelectorAll('.btn-calc').forEach(btn => {
 // CONTROL DE NAVEGACIÓN GENERAL (PUENTE INTERCOMUNICADOR CORREGIDO)
 // =======================================================
 function resetearEstilosBotones() {
-  [btnPrincipal, btnMembresias, btnDinamicas, btnCalculadoraLibre, btnEstadisticas, btnRoles, btnSeguridad].forEach(btn => { if(btn) btn.className = "w-full flex items-center gap-4 px-4 py-3 rounded-xl transition text-zinc-400 hover:bg-zinc-900 hover:text-white font-medium text-left text-sm"; });
+  [btnPrincipal, btnMembresias, btnDinamicas, btnCalculadoraLibre, btnEstadisticas, btnRoles, btnSeguridad, btnAbonos].forEach(btn => { if(btn) btn.className = "w-full flex items-center gap-4 px-4 py-3 rounded-xl transition text-zinc-400 hover:bg-zinc-900 hover:text-white font-medium text-left text-sm"; });
 }
 function activarBoton(boton) {
   resetearEstilosBotones(); if(boton) boton.className = "w-full flex items-center gap-4 px-4 py-3 rounded-xl transition bg-[#D32F2F] text-white font-medium shadow-lg shadow-red-900/10 text-left text-sm";
@@ -978,6 +1508,11 @@ btnSeguridad.onclick = () => {
   apagarEscuchasActivos();
   activarBoton(btnSeguridad);
   window.dispatchEvent(new CustomEvent('abrirSeguridadAdmin'));
+};
+if (btnAbonos) btnAbonos.onclick = () => {
+  apagarEscuchasActivos();
+  activarBoton(btnAbonos);
+  cargarPantallaCuentasPorCobrar();
 };
 
 // Arrancamos el Panel Principal al abrir el sistema
