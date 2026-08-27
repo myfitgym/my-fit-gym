@@ -399,15 +399,24 @@ function cargarPantallaUnificada() {
 }
 
 function obtenerItemsPos() {
+  const normalizarNombre = (texto) => (texto || '').toString().trim().toLowerCase();
+  const esEntradaLegacy = (item) => {
+    const nombre = normalizarNombre(item?.nombre);
+    return nombre === 'entrada' || nombre.includes('entrada');
+  };
+
   // Priorizar productos del catálogo (Firestore). Evitar duplicados por id o por nombre con servicios.
-  const existenteIds = new Set(productosVentaRapida.map(p => p.id));
-  const existenteNombres = new Set(productosVentaRapida.map(p => (p.nombre || '').toString().toLowerCase()));
+  const productosFiltrados = productosVentaRapida.filter(p => !esEntradaLegacy(p));
+  const existenteIds = new Set(productosFiltrados.map(p => p.id));
+  const existenteNombres = new Set(productosFiltrados.map(p => normalizarNombre(p.nombre)));
+
   return [
-    ...productosVentaRapida,
+    ...productosFiltrados,
     ...serviciosVentaRapida.filter(servicio => {
+      if (esEntradaLegacy(servicio)) return false;
       if (existenteIds.has(servicio.id)) return false;
-      const nombre = (servicio.nombre || '').toString().toLowerCase();
-      if (existenteNombres.has(nombre)) return false; // evita duplicados por nombre
+      const nombre = normalizarNombre(servicio.nombre);
+      if (existenteNombres.has(nombre)) return false;
       return true;
     })
   ];
@@ -415,18 +424,21 @@ function obtenerItemsPos() {
 
 function renderizarBotonesPOS() {
   const grid = document.getElementById('grid-productos-pos'); if (!grid) return;
-  // Eliminar cualquier contenido estático residual dentro del contenedor para evitar duplicados hardcoded
+  // Eliminar cualquier contenido estático residual dentro del contenedor para evitar duplicados hardcoded.
+  // Si algún dato legacy del cambio previo sigue trayendo "Entrada", se elimina aquí también.
   Array.from(grid.children).forEach(child => {
-    // si hay nodos con texto 'Entrada' incrustados de versiones antiguas, removerlos
     try {
-      const txt = child.textContent || '';
-      if (txt.toLowerCase().includes('entrada')) {
+      const txt = (child.textContent || '').toLowerCase();
+      if (txt.includes('entrada')) {
         child.remove();
       }
     } catch (e) { /* ignore */ }
   });
 
-  const listaItems = obtenerItemsPos();
+  const listaItems = obtenerItemsPos().filter(item => {
+    const nombre = (item?.nombre || '').toString().trim().toLowerCase();
+    return !(nombre === 'entrada' || nombre.includes('entrada'));
+  });
   grid.innerHTML = listaItems.map(prod => {
     const iconoClass = esEmoji(prod.icono) ? '' : 'material-symbols-outlined';
     const esServicio = prod.tipo === 'servicio';
