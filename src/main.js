@@ -399,15 +399,33 @@ function cargarPantallaUnificada() {
 }
 
 function obtenerItemsPos() {
+  // Priorizar productos del catálogo (Firestore). Evitar duplicados por id o por nombre con servicios.
   const existenteIds = new Set(productosVentaRapida.map(p => p.id));
+  const existenteNombres = new Set(productosVentaRapida.map(p => (p.nombre || '').toString().toLowerCase()));
   return [
     ...productosVentaRapida,
-    ...serviciosVentaRapida.filter(servicio => !existenteIds.has(servicio.id))
+    ...serviciosVentaRapida.filter(servicio => {
+      if (existenteIds.has(servicio.id)) return false;
+      const nombre = (servicio.nombre || '').toString().toLowerCase();
+      if (existenteNombres.has(nombre)) return false; // evita duplicados por nombre
+      return true;
+    })
   ];
 }
 
 function renderizarBotonesPOS() {
   const grid = document.getElementById('grid-productos-pos'); if (!grid) return;
+  // Eliminar cualquier contenido estático residual dentro del contenedor para evitar duplicados hardcoded
+  Array.from(grid.children).forEach(child => {
+    // si hay nodos con texto 'Entrada' incrustados de versiones antiguas, removerlos
+    try {
+      const txt = child.textContent || '';
+      if (txt.toLowerCase().includes('entrada')) {
+        child.remove();
+      }
+    } catch (e) { /* ignore */ }
+  });
+
   const listaItems = obtenerItemsPos();
   grid.innerHTML = listaItems.map(prod => {
     const iconoClass = esEmoji(prod.icono) ? '' : 'material-symbols-outlined';
