@@ -1,7 +1,10 @@
 // Importamos la base de datos desde tu archivo de configuración
 import { db } from './firebase.js';
 import { collection, addDoc, onSnapshot, query, where, doc, setDoc, getDoc, deleteDoc, updateDoc } from 'firebase/firestore';
+import { registerSW } from 'virtual:pwa-register';
 import './admin.js';
+
+registerSW({ immediate: true });
 
 // Referencias DOM (Barra Lateral de index.html)
 const contenedorPantallas = document.getElementById('contenedor-pantallas');
@@ -255,6 +258,7 @@ function cargarPantallaUnificada() {
             <h2 class="text-2xl font-black text-zinc-900 tracking-tight">Venta en un Clic</h2>
             <p class="text-zinc-500 text-xs">Los productos se agregarán a la orden de cobro de la derecha.</p>
           </div>
+          <input id="buscador-productos-pos" type="search" placeholder="Buscar producto..." class="w-full rounded-xl border border-zinc-200 bg-white px-4 py-2 text-sm outline-none focus:border-red-500">
           <div class="grid grid-cols-[repeat(auto-fit,minmax(140px,1fr))] gap-3 auto-rows-fr" id="grid-productos-pos">
             </div>
         </div>
@@ -287,9 +291,10 @@ function cargarPantallaUnificada() {
           
           <div class="space-y-2">
             <label class="block text-[10px] font-bold text-zinc-500 uppercase">Método de Pago</label>
-            <div class="grid grid-cols-3 gap-2">
+            <div class="grid grid-cols-4 gap-2">
               <button id="pago-efectivo" class="py-2.5 rounded-xl font-bold text-xs bg-[#D32F2F] text-white border border-transparent transition-all">EFECTIVO</button>
               <button id="pago-tarjeta" class="py-2.5 rounded-xl font-bold text-xs bg-zinc-800 text-zinc-400 border border-zinc-700 transition-all">TARJETA</button>
+              <button id="pago-mixto" class="py-2.5 rounded-xl font-bold text-xs bg-zinc-800 text-zinc-400 border border-zinc-700 transition-all">MIXTO</button>
               <button id="pago-abono" class="py-2.5 rounded-xl font-bold text-xs bg-amber-500 text-white border border-transparent transition-all">ABONO</button>
             </div>
           </div>
@@ -298,6 +303,11 @@ function cargarPantallaUnificada() {
             <label class="block text-[10px] font-bold text-zinc-500 uppercase">¿Con cuánto paga?</label>
             <input type="number" id="monto-recibido" placeholder="0.00" class="w-full bg-zinc-900 border border-zinc-800 rounded-xl px-3 py-2 text-sm font-mono text-white outline-none focus:border-red-500" />
             <div id="cambio-resultado" class="text-xs font-black text-emerald-400 pt-1">Cambio: $0.00</div>
+          </div>
+          <div id="modulo-mixto" class="hidden grid grid-cols-2 gap-2 bg-zinc-950 p-3 rounded-2xl border border-zinc-800">
+            <div><label class="block text-[10px] font-bold text-zinc-500 uppercase">Monto Efectivo</label><input type="number" min="0" step="0.01" id="monto-mixto-efectivo" class="w-full bg-zinc-900 border border-zinc-800 rounded-xl px-3 py-2 text-sm font-mono text-white outline-none focus:border-red-500"></div>
+            <div><label class="block text-[10px] font-bold text-zinc-500 uppercase">Monto Tarjeta</label><input type="number" min="0" step="0.01" id="monto-mixto-tarjeta" class="w-full bg-zinc-900 border border-zinc-800 rounded-xl px-3 py-2 text-sm font-mono text-white outline-none focus:border-red-500"></div>
+            <div id="mixto-resultado" class="col-span-2 text-xs font-black text-emerald-400">Desglose: $0.00 / $0.00</div>
           </div>
 
           <button id="btn-finalizar-compra" class="w-full py-3 bg-emerald-600 hover:bg-emerald-700 text-white font-black text-xs tracking-wider rounded-xl shadow-md transition-all uppercase">Confirmar y Registrar Venta</button>
@@ -311,36 +321,43 @@ function cargarPantallaUnificada() {
     </div>`
 
   renderizarBotonesPOS();
+  document.getElementById('buscador-productos-pos')?.addEventListener('input', renderizarBotonesPOS);
   renderizarCarrito();
   configurarEventosPago();
 
-  const inicioHoy = new Date(); inicioHoy.setHours(0, 0, 0, 0, 0);
+  const inicioHoy = new Date();
+  inicioHoy.setHours(0, 0, 0, 0);
   const finHoy = new Date(inicioHoy);
   finHoy.setDate(finHoy.getDate() + 1);
-  const qVentas = query(collection(db, "ventas"), where("fecha", ">=", inicioHoy), where("fecha", "<", finHoy));
-  
-  desuscribirVentas = onSnapshot(qVentas, (snapshot) => {
-    const txtGanancias = document.getElementById('ganancias-hoy'); if (!txtGanancias) return;
-    let totalHoy = 0; snapshot.forEach((doc) => { totalHoy += Number(doc.data().monto || 0); });
-    txtGanancias.textContent = `$${totalHoy.toFixed(2)}`;
-  });
+  const normalizarFechaVenta = (valor) => {
+    if (valor && typeof valor.toDate === 'function') return valor.toDate();
+    if (typeof valor === 'string' || typeof valor === 'number') {
+      const fecha = new Date(valor);
+      if (!Number.isNaN(fecha.getTime())) return fecha;
+    }
+    return null;
+  };
 
-  // REPARADO: Muestra correctamente el concepto textual sin romperse
+  // Las ventas nuevas usan ISO y las antiguas pueden usar Timestamp; filtrar en
+  // memoria permite soportar ambos formatos sin perder el listener en tiempo real.
+  const qVentas = collection(db, "ventas");
   desuscribirHistorialMesa = onSnapshot(qVentas, (snapshot) => {
-    const tabla = document.getElementById('historial-ventas-hoy-tabla'); if (!tabla) return;
-    let registros = [];
+    const registros = [];
     snapshot.forEach((d) => {
       const data = d.data();
-      let f = data.fecha;
-      if (f && typeof f.toDate === 'function') {
-        f = f.toDate();
-      } else if (typeof f === 'string' || typeof f === 'number') {
-        f = new Date(f);
-      } else {
-        f = new Date();
+      const fecha = normalizarFechaVenta(data.fecha);
+      if (fecha && fecha >= inicioHoy && fecha < finHoy) {
+        registros.push({ id: d.id, ...data, fecha });
       }
-      registros.push({ id: d.id, ...data, fecha: f });
     });
+
+    const txtGanancias = document.getElementById('ganancias-hoy');
+    if (txtGanancias) {
+      const totalHoy = registros.reduce((total, venta) => total + Number(venta.monto || 0), 0);
+      txtGanancias.textContent = `$${totalHoy.toFixed(2)}`;
+    }
+
+    const tabla = document.getElementById('historial-ventas-hoy-tabla'); if (!tabla) return;
     registros.sort((a,b) => b.fecha - a.fecha);
 
     if (registros.length === 0) {
@@ -352,7 +369,7 @@ function cargarPantallaUnificada() {
       <tr class="border-b hover:bg-zinc-50">
         <td class="py-2.5 font-mono text-[11px] text-zinc-500">${v.fecha.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</td>
         <td class="py-2.5 font-bold text-zinc-800 truncate max-w-[280px]">${v.concepto || 'Venta Express'}</td>
-        <td class="py-2.5 text-center"><span class="px-2 py-0.5 rounded-full font-bold text-[9px] uppercase ${v.metodoPago === 'Tarjeta' || v.metodo === 'tarjeta' ? 'bg-blue-50 text-blue-700' : 'bg-amber-50 text-amber-700'}">${v.metodoPago || v.metodo || 'Efectivo'}</span></td>
+        <td class="py-2.5 text-center"><span class="px-2 py-1 rounded font-bold text-[9px] uppercase ${(() => { const metodo = String(v.metodoPago || v.metodo || 'EFECTIVO').toUpperCase(); return metodo === 'TARJETA' ? 'bg-blue-100 text-blue-700' : metodo === 'MIXTO' ? 'bg-purple-100 text-purple-700' : metodo === 'ABONO' ? 'bg-amber-100 text-amber-700' : 'bg-zinc-100 text-zinc-700'; })()}">${v.metodoPago || v.metodo || 'EFECTIVO'}</span></td>
         <td class="py-2.5 text-right font-black text-zinc-900">$${Number(v.monto).toFixed(2)}</td>
         <td class="py-2.5 text-right"><button type="button" data-id="${v.id}" class="btn-cancelar-historial px-3 py-1 rounded-xl bg-red-50 text-red-700 hover:bg-red-100 text-xs font-bold">Eliminar</button></td>
       </tr>
@@ -391,7 +408,14 @@ function cargarPantallaUnificada() {
       snapshot.forEach((doc) => {
         const cliente = doc.data(); const fVence = cliente.fechaVencimiento.toDate();
         const diasRestantes = Math.ceil((fVence.getTime() - hoy.getTime()) / (1000 * 60 * 60 * 24));
-        tarjetasAlertas += `<div class="flex items-center justify-between p-3.5 bg-white border border-red-50 rounded-2xl shadow-sm"><div class="overflow-hidden mr-2"><h4 class="font-bold text-zinc-800 text-xs truncate">${cliente.nombre}</h4><p class="text-[10px] text-zinc-500">Vence en <span class="text-[#D32F2F] font-bold">${diasRestantes} d</span></p></div><a href="https://api.whatsapp.com/send?phone=${cliente.telefono}" target="_blank" class="flex items-center justify-center w-8 h-8 bg-emerald-500 text-white rounded-full transition shrink-0 shadow-sm"><span class="material-symbols-outlined text-base">chat</span></a></div>`;
+        const mensaje = diasRestantes === 0
+          ? `Hola ${cliente.nombre}, te recordamos que tu membresía de My Fit Gym vence el día de hoy. Te esperamos para realizar tu renovación y continuar con tu entrenamiento.`
+          : diasRestantes === 1
+            ? `Hola ${cliente.nombre}, te recordamos que a tu membresía de My Fit Gym le queda 1 día y vence el día de mañana. Te esperamos para realizar tu renovación.`
+            : `Hola ${cliente.nombre}, te recordamos que a tu membresía de My Fit Gym le quedan ${diasRestantes} días restantes. Te esperamos en el gimnasio para tu renovación.`;
+        const telefono = String(cliente.telefono || '').replace(/\D/g, '').replace(/^52/, '');
+        const enlaceWhatsApp = `https://wa.me/52${telefono}?text=${encodeURIComponent(mensaje)}`;
+        tarjetasAlertas += `<div class="flex items-center justify-between p-3.5 bg-white border border-red-50 rounded-2xl shadow-sm"><div class="overflow-hidden mr-2"><h4 class="font-bold text-zinc-800 text-xs truncate">${cliente.nombre}</h4><p class="text-[10px] text-zinc-500">Vence en <span class="text-[#D32F2F] font-bold">${diasRestantes} d</span></p></div><a href="${enlaceWhatsApp}" target="_blank" class="flex items-center justify-center w-8 h-8 bg-emerald-500 text-white rounded-full transition shrink-0 shadow-sm"><span class="material-symbols-outlined text-base">chat</span></a></div>`;
       });
     }
     contenedorAlertas.innerHTML = tarjetasAlertas;
@@ -424,6 +448,7 @@ function obtenerItemsPos() {
 
 function renderizarBotonesPOS() {
   const grid = document.getElementById('grid-productos-pos'); if (!grid) return;
+  const termino = (document.getElementById('buscador-productos-pos')?.value || '').trim().toLowerCase();
   // Eliminar cualquier contenido estático residual dentro del contenedor para evitar duplicados hardcoded.
   // Si algún dato legacy del cambio previo sigue trayendo "Entrada", se elimina aquí también.
   Array.from(grid.children).forEach(child => {
@@ -437,20 +462,21 @@ function renderizarBotonesPOS() {
 
   const listaItems = obtenerItemsPos().filter(item => {
     const nombre = (item?.nombre || '').toString().trim().toLowerCase();
-    return !(nombre === 'entrada' || nombre.includes('entrada'));
+    return !(nombre === 'entrada' || nombre.includes('entrada')) && (!termino || nombre.includes(termino));
   });
   grid.innerHTML = listaItems.map(prod => {
     const iconoClass = esEmoji(prod.icono) ? '' : 'material-symbols-outlined';
     const esServicio = prod.tipo === 'servicio';
     const agotado = !esServicio && Number(prod.stock || 0) <= 0;
+    const stockBajo = !esServicio && Number(prod.stock || 0) <= 3;
     return `
       <button data-id="${prod.id}" ${agotado ? 'disabled' : ''} class="btn-producto-pos w-full min-h-[140px] flex flex-col items-center justify-center p-4 bg-white border border-zinc-200 rounded-3xl hover:border-[#D32F2F] transition-all transform active:scale-95 group shadow-sm disabled:opacity-40 disabled:bg-zinc-100 disabled:border-zinc-200 disabled:pointer-events-none">
         <div class="w-12 h-12 bg-zinc-100 group-hover:bg-red-50 rounded-2xl flex items-center justify-center text-zinc-700 group-hover:text-[#D32F2F] transition mb-2">
           <span class="${iconoClass} text-xl">${prod.icono || 'box'}</span>
         </div>
         <span class="font-bold text-zinc-800 text-xs text-center truncate w-full">${prod.nombre}</span>
-        <span class="text-[10px] font-semibold ${agotado ? 'text-red-500 font-bold' : 'text-zinc-400'} mb-1.5">${esServicio ? 'Ilimitado 🎫' : `Stock: ${prod.stock ?? 0}`}</span>
-        <span class="text-[11px] px-2.5 py-0.5 bg-zinc-900 text-white rounded-full font-bold">$${prod.precio}</span>
+        <span class="text-[10px] font-semibold ${agotado || stockBajo ? 'text-red-500 font-bold' : 'text-zinc-400'} mb-1.5">${esServicio ? 'Ilimitado 🎫' : (agotado ? 'Agotado' : `Stock: ${prod.stock ?? 0}`)}</span>
+        ${prod.esSubmenu ? '<span class="text-xl font-black text-zinc-900" aria-label="Abrir variantes">&gt;</span>' : `<span class="text-[11px] px-2.5 py-0.5 bg-zinc-900 text-white rounded-full font-bold">$${prod.precio}</span>`}
       </button>
     `;
   }).join('');
@@ -459,7 +485,56 @@ function renderizarBotonesPOS() {
     btn.onclick = () => {
       const id = btn.getAttribute('data-id');
       const producto = obtenerItemsPos().find(p => p.id === id);
+      if (producto?.esSubmenu && Array.isArray(producto.variantes) && producto.variantes.length > 0) {
+        abrirModalVariantes(producto);
+        return;
+      }
       agregarAlCarrito(producto);
+    };
+  });
+}
+
+function abrirModalVariantes(producto) {
+  const modal = document.createElement('div');
+  modal.className = 'fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4';
+  const variantes = producto.variantes
+    .map((variante) => typeof variante === 'string' ? { nombre: variante, precio: producto.precio, stock: producto.stock } : variante)
+    .filter((variante) => variante?.nombre);
+  modal.innerHTML = `
+    <div class="w-full max-w-sm rounded-3xl bg-white p-5 shadow-2xl">
+      <div class="mb-4 flex items-start justify-between gap-3">
+        <div><h3 class="text-lg font-black">${producto.nombre}</h3><p class="text-xs text-zinc-500">Selecciona una variante</p></div>
+        <button type="button" data-cerrar-variantes class="text-xl text-zinc-400">✕</button>
+      </div>
+      <div class="space-y-2">
+        ${variantes.map((variante, index) => `
+          <button type="button" data-variante-index="${index}" class="flex w-full items-center justify-between rounded-2xl border border-zinc-200 px-4 py-3 text-left hover:border-red-500">
+            <span class="font-bold text-zinc-800">${variante.nombre}</span>
+            <span class="text-xs font-black">$${Number(variante.precio ?? producto.precio).toFixed(2)}</span>
+          </button>
+        `).join('')}
+      </div>
+    </div>
+  `;
+  document.body.appendChild(modal);
+  const cerrar = () => modal.remove();
+  modal.querySelector('[data-cerrar-variantes]').onclick = cerrar;
+  modal.addEventListener('click', (event) => {
+    if (event.target === modal) cerrar();
+  });
+  modal.querySelectorAll('[data-variante-index]').forEach((button) => {
+    button.onclick = () => {
+      const variante = variantes[Number(button.dataset.varianteIndex)];
+      agregarAlCarrito({
+        ...producto,
+        ...variante,
+        id: `${producto.id}::${variante.nombre}`,
+        productoId: producto.id,
+        nombre: `${producto.nombre} - ${variante.nombre}`,
+        precio: Number(variante.precio ?? producto.precio),
+        stock: Number(variante.stock ?? producto.stock ?? 0)
+      });
+      cerrar();
     };
   });
 }
@@ -524,19 +599,56 @@ let metodoPagoActual = "Efectivo";
 function configurarEventosPago() {
   const btnEfectivo = document.getElementById('pago-efectivo');
   const btnTarjeta = document.getElementById('pago-tarjeta');
+  const btnMixto = document.getElementById('pago-mixto');
   const btnAbono = document.getElementById('pago-abono');
   const moduloCambio = document.getElementById('modulo-cambio');
+  const moduloMixto = document.getElementById('modulo-mixto');
+  const montoMixtoEfectivo = document.getElementById('monto-mixto-efectivo');
+  const montoMixtoTarjeta = document.getElementById('monto-mixto-tarjeta');
+  const mixtoResultado = document.getElementById('mixto-resultado');
   const inputMonto = document.getElementById('monto-recibido');
   const btnFinalizar = document.getElementById('btn-finalizar-compra');
 
   if (!btnEfectivo || !btnTarjeta) return;
+
+  const obtenerTotalCarrito = () => carrito.reduce((sum, i) => sum + (i.precio * i.cantidad), 0);
+  const actualizarEstadoMixto = () => {
+    const total = obtenerTotalCarrito();
+    const efectivo = Number(montoMixtoEfectivo?.value || 0);
+    const tarjeta = Number(montoMixtoTarjeta?.value || 0);
+
+    const diferencia = Number((total - efectivo - tarjeta).toFixed(2));
+    const completo = Math.abs(diferencia) <= 0.009;
+    if (mixtoResultado) {
+      if (completo) {
+        mixtoResultado.textContent = 'Restante: $0.00 ✓';
+        mixtoResultado.className = 'col-span-2 text-xs font-black text-emerald-400';
+      } else if (diferencia > 0) {
+        mixtoResultado.textContent = `Faltan: $${diferencia.toFixed(2)} para completar el pago`;
+        mixtoResultado.className = 'col-span-2 text-xs font-black text-amber-400';
+      } else {
+        mixtoResultado.textContent = `Exceso: $${Math.abs(diferencia).toFixed(2)}`;
+        mixtoResultado.className = 'col-span-2 text-xs font-black text-red-400';
+      }
+    }
+    if (btnFinalizar && metodoPagoActual === 'Mixto') {
+      btnFinalizar.disabled = !completo;
+      btnFinalizar.classList.toggle('opacity-50', !completo);
+      btnFinalizar.classList.toggle('cursor-not-allowed', !completo);
+    }
+    return completo;
+  };
 
   btnEfectivo.onclick = () => {
     metodoPagoActual = "Efectivo";
     btnEfectivo.className = "py-2.5 rounded-xl font-bold text-xs bg-[#D32F2F] text-white border border-transparent transition-all";
     btnTarjeta.className = "py-2.5 rounded-xl font-bold text-xs bg-zinc-800 text-zinc-400 border border-zinc-700 transition-all";
     if (btnAbono) btnAbono.className = "py-2.5 rounded-xl font-bold text-xs bg-amber-500 text-white border border-transparent transition-all";
+    if (btnMixto) btnMixto.className = "py-2.5 rounded-xl font-bold text-xs bg-zinc-800 text-zinc-400 border border-zinc-700 transition-all";
     moduloCambio.classList.remove('hidden');
+    moduloMixto?.classList.add('hidden');
+    btnFinalizar.disabled = false;
+    btnFinalizar.classList.remove('opacity-50', 'cursor-not-allowed');
     const total = carrito.reduce((sum, i) => sum + (i.precio * i.cantidad), 0);
     calcularCambioCalculadora(total);
   };
@@ -546,12 +658,34 @@ function configurarEventosPago() {
     btnTarjeta.className = "py-2.5 rounded-xl font-bold text-xs bg-blue-600 text-white border border-transparent transition-all";
     btnEfectivo.className = "py-2.5 rounded-xl font-bold text-xs bg-zinc-800 text-zinc-400 border border-zinc-700 transition-all";
     if (btnAbono) btnAbono.className = "py-2.5 rounded-xl font-bold text-xs bg-amber-500 text-white border border-transparent transition-all";
+    if (btnMixto) btnMixto.className = "py-2.5 rounded-xl font-bold text-xs bg-zinc-800 text-zinc-400 border border-zinc-700 transition-all";
     moduloCambio.classList.add('hidden');
+    moduloMixto?.classList.add('hidden');
+    btnFinalizar.disabled = false;
+    btnFinalizar.classList.remove('opacity-50', 'cursor-not-allowed');
   };
+
+  if (btnMixto) {
+    btnMixto.onclick = () => {
+      metodoPagoActual = "Mixto";
+      btnMixto.className = "py-2.5 rounded-xl font-bold text-xs bg-purple-600 text-white border border-transparent transition-all";
+      btnEfectivo.className = "py-2.5 rounded-xl font-bold text-xs bg-zinc-800 text-zinc-400 border border-zinc-700 transition-all";
+      btnTarjeta.className = "py-2.5 rounded-xl font-bold text-xs bg-zinc-800 text-zinc-400 border border-zinc-700 transition-all";
+      if (btnAbono) btnAbono.className = "py-2.5 rounded-xl font-bold text-xs bg-amber-500 text-white border border-transparent transition-all";
+      moduloCambio.classList.add('hidden');
+      moduloMixto?.classList.remove('hidden');
+      actualizarEstadoMixto();
+    };
+  }
+
+  montoMixtoEfectivo?.addEventListener('input', actualizarEstadoMixto);
+  montoMixtoTarjeta?.addEventListener('input', actualizarEstadoMixto);
 
   if (btnAbono) {
     btnAbono.onclick = async () => {
       metodoPagoActual = 'Abono';
+      btnFinalizar.disabled = false;
+      btnFinalizar.classList.remove('opacity-50', 'cursor-not-allowed');
       // Abrir modal de abonos y obtener cliente + abono inicial
       const total = carrito.reduce((sum, i) => sum + (i.precio * i.cantidad), 0);
       try {
@@ -563,13 +697,21 @@ function configurarEventosPago() {
         const ventaObj = {
           tipo: carrito.some(i => i.nombre.toLowerCase().includes('membresia')) ? 'membresia' : 'producto',
           concepto: carrito.map(i => `${i.cantidad}x ${i.nombre}`).join(', '),
+          monto: Number(abonoInicial),
+          total: Number(abonoInicial),
+          metodo: 'ABONO',
+          metodoPago: 'ABONO',
           montoTotal: total,
           montoPagado: Number(abonoInicial),
           saldoPendiente: Number((total - Number(abonoInicial)).toFixed(2)),
           clienteNombre: cliente || null,
           historialAbonos: [{ fecha: new Date().toISOString(), monto: Number(abonoInicial) }],
           estadoPago: 'pendiente',
-          productosArr: carrito.map(i => ({ id: i.id, nombre: i.nombre, cantidad: i.cantidad })),
+          productosArr: carrito.map(i => {
+            const detalle = { id: i.productoId || i.id, nombre: i.nombre, cantidad: i.cantidad };
+            if (i.productoId) detalle.variante = i.nombre;
+            return detalle;
+          }),
           fecha: new Date().toISOString()
         };
 
@@ -579,7 +721,7 @@ function configurarEventosPago() {
           await addDoc(collection(db, 'caja'), { tipo: 'abono', ventaId: ventaRef.id, monto: Number(abonoInicial), descripcion: `Abono inicial ${cliente || ''}`, fecha: new Date().toISOString() });
           // Descontar stock
           for (const item of carrito) {
-            const prodRef = doc(db, 'productos', item.id);
+            const prodRef = doc(db, 'productos', item.productoId || item.id);
             const snapshot = await getDoc(prodRef);
             if (snapshot.exists() && snapshot.data().tipo !== 'servicio') {
               const stockActual = Number(snapshot.data().stock || 0);
@@ -635,6 +777,8 @@ function configurarEventosPago() {
       return;
     }
     const total = carrito.reduce((sum, i) => sum + (i.precio * i.cantidad), 0);
+    const mixtoEfectivo = Number(montoMixtoEfectivo?.value || 0);
+    const mixtoTarjeta = Number(montoMixtoTarjeta?.value || 0);
     if (metodoPagoActual === "Efectivo" && !inputMonto.value.trim()) {
       mostrarSnackbarMensaje('Ingresa el monto recibido antes de confirmar la venta en efectivo.', 'error', 2500);
       return;
@@ -643,21 +787,35 @@ function configurarEventosPago() {
       mostrarSnackbarMensaje('El monto recibido es menor al total a pagar.', 'error', 2500);
       return;
     }
+    if (metodoPagoActual === "Mixto" && (mixtoEfectivo < 0 || mixtoTarjeta < 0 || Math.abs((mixtoEfectivo + mixtoTarjeta) - total) > 0.009)) {
+      actualizarEstadoMixto();
+      mostrarSnackbarMensaje('El desglose mixto debe sumar exactamente el total.', 'error', 2500);
+      return;
+    }
 
     try {
       const conceptoStr = carrito.map(i => `${i.cantidad}x ${i.nombre}`).join(', ');
 
-      await addDoc(collection(db, "ventas"), {
+      const ventaData = {
         tipo: carrito.some(i => i.nombre.toLowerCase().includes('membresia')) ? 'membresia' : 'producto',
         concepto: conceptoStr,
         monto: total,
         metodoPago: metodoPagoActual,
-        productosArr: carrito.map(i => ({ id: i.id, nombre: i.nombre, cantidad: i.cantidad })),
+        productosArr: carrito.map(i => {
+          const detalle = { id: i.productoId || i.id, nombre: i.nombre, cantidad: i.cantidad };
+          if (i.productoId) detalle.variante = i.nombre;
+          return detalle;
+        }),
         fecha: new Date().toISOString()
-      });
+      };
+      if (metodoPagoActual === "Mixto") {
+        ventaData.montoEfectivo = mixtoEfectivo;
+        ventaData.montoTarjeta = mixtoTarjeta;
+      }
+      await addDoc(collection(db, "ventas"), ventaData);
 
       for (const item of carrito) {
-        const prodRef = doc(db, "productos", item.id);
+        const prodRef = doc(db, "productos", item.productoId || item.id);
         const snapshot = await getDoc(prodRef);
         if (snapshot.exists() && snapshot.data().tipo !== 'servicio') {
           const stockActual = Number(snapshot.data().stock || 0);
@@ -1205,6 +1363,7 @@ function cargarPantallaMembresiasMaster() {
         </div>
         <div class="space-y-3 pt-2">
           <h2 class="text-base font-black text-zinc-800 tracking-tight uppercase">Historial / Reincorporación Rápida</h2>
+          <p class="text-xs text-gray-500">Se eliminará automáticamente pasando 60 días</p>
           <div class="bg-white border rounded-3xl p-3 shadow-sm overflow-x-auto"><table class="w-full text-left text-xs"><tbody id="tabla-clientes-historial"></tbody></table></div>
         </div>
       </div>
@@ -1257,20 +1416,35 @@ function cargarPantallaMembresiasMaster() {
     };
 
     const hoy = new Date();
+    const obtenerFechaVencimiento = (cliente) => {
+      if (cliente.fechaVencimiento && typeof cliente.fechaVencimiento.toDate === 'function') {
+        return cliente.fechaVencimiento.toDate();
+      }
+      const fecha = new Date(cliente.fechaVencimiento);
+      return Number.isNaN(fecha.getTime()) ? null : fecha;
+    };
     const clientesActivos = todosLosClientesCargados.filter((c) => {
-      const fVence = c.fechaVencimiento.toDate();
-      return fVence >= hoy && filtrarCliente(c);
+      const fVence = obtenerFechaVencimiento(c);
+      return fVence && fVence >= hoy && filtrarCliente(c);
     });
     const clientesHistorial = todosLosClientesCargados.filter((c) => {
-      const fVence = c.fechaVencimiento.toDate();
-      return fVence < hoy && filtrarCliente(c);
+      const fVence = obtenerFechaVencimiento(c);
+      if (!fVence || fVence >= hoy) return false;
+      const diasCaducado = (hoy.getTime() - fVence.getTime()) / (1000 * 60 * 60 * 24);
+      if (diasCaducado > 60) {
+        deleteDoc(doc(db, "clientes", c.dbId)).catch((error) => {
+          console.error('Error eliminando cliente histórico antiguo:', error);
+        });
+        return false;
+      }
+      return filtrarCliente(c);
     });
 
     if (!clientesActivos.length) {
       tA.innerHTML = `<tr><td colspan="3" class="py-4 text-center text-zinc-400">No hay clientes activos que coincidan con la búsqueda.</td></tr>`;
     } else {
       clientesActivos.forEach((c) => {
-        const fVence = c.fechaVencimiento.toDate(); const fVenceStr = fVence.toLocaleDateString();
+        const fVence = obtenerFechaVencimiento(c); const fVenceStr = fVence.toLocaleDateString();
         tA.innerHTML += `<tr class="border-b hover:bg-zinc-50"><td class="py-3 pl-2 font-bold text-zinc-800">${c.nombre}</td><td><span class="px-2 py-0.5 border rounded-full font-bold text-[9px] uppercase bg-emerald-50 text-emerald-700">${c.tipoMembresia}</span></td><td>Vence: ${fVenceStr}</td></tr>`;
       });
     }
@@ -1279,12 +1453,26 @@ function cargarPantallaMembresiasMaster() {
       tH.innerHTML = `<tr><td colspan="3" class="py-4 text-center text-zinc-400">No hay clientes históricos que coincidan con la búsqueda.</td></tr>`;
     } else {
       clientesHistorial.forEach((c) => {
-        const fVence = c.fechaVencimiento.toDate(); const fVenceStr = fVence.toLocaleDateString();
-        tH.innerHTML += `<tr class="border-b text-zinc-400"><td class="py-2.5 pl-2 font-bold">${c.nombre}</td><td>Caducó: ${fVenceStr}</td><td class="text-right pr-2"><button data-id="${c.dbId}" data-name="${c.nombre}" data-tel="${c.telefono}" class="btn-trigger-reincorporar bg-zinc-900 text-white px-2 py-0.5 rounded-lg text-[10px]">Reincorporar</button></td></tr>`;
+        const fVence = obtenerFechaVencimiento(c); const fVenceStr = fVence.toLocaleDateString();
+        tH.innerHTML += `<tr class="border-b text-zinc-400"><td class="py-2.5 pl-2 font-bold">${c.nombre}</td><td>Caducó: ${fVenceStr}</td><td class="text-right pr-2 whitespace-nowrap"><button data-id="${c.dbId}" data-name="${c.nombre}" data-tel="${c.telefono}" class="btn-trigger-reincorporar bg-zinc-900 text-white px-2 py-0.5 rounded-lg text-[10px]">Reincorporar</button> <button data-id="${c.dbId}" data-name="${c.nombre}" class="btn-eliminar-historial bg-red-600 text-white px-2 py-0.5 rounded-lg text-[10px]">Eliminar</button></td></tr>`;
       });
     }
 
-    document.querySelectorAll('.btn-trigger-reincorporar').forEach(btn => {
+    tH.querySelectorAll('.btn-eliminar-historial').forEach((btn) => {
+      btn.onclick = async () => {
+        const nombre = btn.getAttribute('data-name') || 'este registro';
+        if (!(await mostrarConfirmacion(`¿Deseas eliminar a ${nombre} del historial?`))) return;
+        try {
+          await deleteDoc(doc(db, "clientes", btn.getAttribute('data-id')));
+          mostrarSnackbarMensaje('Registro eliminado del historial', 'success', 2200);
+        } catch (error) {
+          console.error('Error eliminando cliente histórico:', error);
+          mostrarSnackbarMensaje('No se pudo eliminar el registro', 'error', 2200);
+        }
+      };
+    });
+
+    tH.querySelectorAll('.btn-trigger-reincorporar').forEach(btn => {
       btn.onclick = () => {
         document.getElementById('reinc-target-name').textContent = btn.getAttribute('data-name');
         document.getElementById('modal-reincorporar').classList.remove('hidden');

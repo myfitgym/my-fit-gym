@@ -187,6 +187,8 @@ function cargarPantallaEstadisticas() {
         <div class="p-5 bg-white border rounded-3xl shadow-sm"><p class="text-[10px] font-bold text-zinc-400 uppercase">Suplementos</p><h3 class="text-2xl font-black mt-1" id="kpi-productos-monto">$0.00</h3></div>
         <div class="p-5 bg-white border rounded-3xl shadow-sm"><p class="text-[10px] font-bold text-zinc-400 uppercase">Ticket Promedio</p><h3 class="text-2xl font-black mt-1" id="kpi-ticket-promedio">$0.00</h3></div>
         <div class="p-5 bg-white border rounded-3xl shadow-sm"><p class="text-[10px] font-bold text-zinc-400 uppercase">MONTO CUENTAS POR COBRAR</p><h3 class="text-2xl font-black mt-1" id="kpi-cuentas-por-cobrar">$0.00</h3></div>
+        <div class="p-5 bg-white border rounded-3xl shadow-sm"><p class="text-[10px] font-bold text-zinc-400 uppercase">TOTAL EFECTIVO</p><h3 class="text-2xl font-black mt-1" id="kpi-total-efectivo">$0.00</h3></div>
+        <div class="p-5 bg-white border rounded-3xl shadow-sm"><p class="text-[10px] font-bold text-zinc-400 uppercase">TOTAL TARJETA</p><h3 class="text-2xl font-black mt-1" id="kpi-total-tarjeta">$0.00</h3></div>
       </div>
       <div class="grid grid-cols-1 lg:grid-cols-3 gap-4">
         <div class="lg:col-span-2 p-5 bg-white border rounded-3xl h-[280px] relative flex items-center justify-center"><canvas id="chart-linea-ingresos"></canvas></div>
@@ -282,11 +284,21 @@ function procesarGraficosSlicers() {
   let total = 0;
   let prod = 0;
   let mbs = 0;
+  let totalEfectivo = 0;
+  let totalTarjeta = 0;
 
   // Agrupar ventas por producto (contar cantidades vendidas)
   const productCounts = {};
   ventasFiltradas.forEach((venta) => {
     total += venta.monto;
+    const metodoPago = String(venta.metodoPago || venta.metodo || '').trim().toLowerCase();
+    if (metodoPago === 'mixto') {
+      totalEfectivo += Number(venta.montoEfectivo || 0);
+      totalTarjeta += Number(venta.montoTarjeta || 0);
+    } else {
+      if (metodoPago === 'efectivo') totalEfectivo += venta.monto;
+      if (metodoPago === 'tarjeta') totalTarjeta += venta.monto;
+    }
     if (venta.tipo === 'producto') prod += venta.monto;
     if (venta.tipo === 'membresia') mbs += venta.monto;
     const items = Array.isArray(venta.productosArr) ? venta.productosArr : [];
@@ -304,13 +316,18 @@ function procesarGraficosSlicers() {
   const kpiMiembros = document.getElementById('kpi-miembros-activos');
   const kpiProductos = document.getElementById('kpi-productos-monto');
   const kpiTicket = document.getElementById('kpi-ticket-promedio');
+  const kpiEfectivo = document.getElementById('kpi-total-efectivo');
+  const kpiTarjeta = document.getElementById('kpi-total-tarjeta');
   const tituloTabla = document.getElementById('titulo-tabla-operaciones-admin');
 
   if (kpiIngreso) kpiIngreso.textContent = `$${total.toFixed(2)}`;
   if (kpiMiembros) kpiMiembros.textContent = `${ventasFiltradas.length}`;
   if (kpiProductos) kpiProductos.textContent = `$${prod.toFixed(2)}`;
   if (kpiTicket) kpiTicket.textContent = `$${(ventasFiltradas.length > 0 ? total / ventasFiltradas.length : 0).toFixed(2)}`;
-  if (tituloTabla) tituloTabla.textContent = `Operaciones del Periodo (${filtroTemporalActual.toUpperCase()})`;
+  if (kpiEfectivo) kpiEfectivo.textContent = `$${totalEfectivo.toFixed(2)}`;
+  if (kpiTarjeta) kpiTarjeta.textContent = `$${totalTarjeta.toFixed(2)}`;
+  const etiquetasPeriodo = { hoy: 'HOY', semana: 'SEMANA', mes: 'MES', anio: 'AÑO' };
+  if (tituloTabla) tituloTabla.textContent = `Operaciones del Periodo (${etiquetasPeriodo[filtroTemporalActual] || filtroTemporalActual.toUpperCase()})`;
 
   // KPI: monto total de cuentas por cobrar (suma de saldoPendiente / saldo) — GLOBAL (sin filtrar por slicer)
   const kpiCuentas = document.getElementById('kpi-cuentas-por-cobrar');
@@ -332,7 +349,7 @@ function procesarGraficosSlicers() {
             <td class="py-2.5 text-zinc-500 font-mono">${venta.fecha.toLocaleString([], { dateStyle: 'short', timeStyle: 'short' })}</td>
             <td class="py-2 font-bold text-zinc-800">${venta.concepto}</td>
             <td class="py-2 uppercase font-bold text-[9px] text-zinc-400 tracking-wider">${venta.tipo === 'membresia' ? '🎫 Membresía' : '📦 Producto'}</td>
-            <td class="py-2 text-center"><span class="px-2 py-0.5 rounded-full font-black text-[9px] uppercase ${venta.metodoPago === 'Tarjeta' ? 'bg-blue-50 text-blue-700' : 'bg-amber-50 text-amber-700'}">${venta.metodoPago}</span></td>
+            <td class="py-2 text-center"><span class="px-2 py-1 rounded font-bold text-[9px] uppercase ${(() => { const metodo = String(venta.metodoPago || venta.metodo || 'EFECTIVO').toUpperCase(); return metodo === 'TARJETA' ? 'bg-blue-100 text-blue-700' : metodo === 'MIXTO' ? 'bg-purple-100 text-purple-700' : metodo === 'ABONO' ? 'bg-amber-100 text-amber-700' : 'bg-zinc-100 text-zinc-700'; })()}">${venta.metodoPago || venta.metodo || 'EFECTIVO'}</span></td>
             <td class="py-2 font-black text-right text-zinc-950">$${venta.monto.toFixed(2)}</td>
             <td class="py-2 text-right"><button data-id="${venta.id}" class="btn-anular-gerencial text-red-600 font-bold hover:underline">Anular 🗑️</button></td>
           </tr>
@@ -502,7 +519,7 @@ function cargarPantallaRoles() {
                 <option value="🎟️">🎟️ Ticket Dorado</option>
               </select>
             </div>
-            <div><label class="block text-[10px] font-bold text-zinc-400 uppercase mb-1">Precio</label><input type="number" id="add-admin-precio" class="w-full px-3 py-2 bg-zinc-50 border rounded-xl text-xs outline-none" /></div>
+            <div id="wrapper-add-precio"><label class="block text-[10px] font-bold text-zinc-400 uppercase mb-1">Precio</label><input type="number" id="add-admin-precio" min="0" class="w-full px-3 py-2 bg-zinc-50 border rounded-xl text-xs outline-none" /></div>
             <div>
               <label class="block text-[10px] font-bold text-zinc-400 uppercase mb-1">Tipo</label>
               <select id="add-admin-tipo" class="w-full px-3 py-2 bg-zinc-50 border rounded-xl text-xs outline-none font-bold">
@@ -512,9 +529,20 @@ function cargarPantallaRoles() {
             </div>
             <div id="wrapper-add-stock-field"><label class="block text-[10px] font-bold text-zinc-400 uppercase mb-1">Stock Disponible</label><input type="number" id="add-admin-stock" value="10" class="w-full px-3 py-2 bg-zinc-50 border rounded-xl text-xs outline-none" /></div>
           </div>
+        <label class="flex items-center gap-2 text-xs font-bold text-zinc-700">
+          <input type="checkbox" id="add-admin-es-submenu" class="h-4 w-4 accent-red-600">
+          ¿Tiene submenú / variantes?
+        </label>
+        <div id="wrapper-add-variantes" class="hidden rounded-2xl border border-zinc-200 bg-zinc-50 p-3 space-y-2">
+          <div class="flex items-center justify-between">
+            <span class="text-[10px] font-bold uppercase text-zinc-500">Variantes</span>
+            <button type="button" id="btn-add-variante" class="rounded-xl bg-zinc-900 px-2.5 py-1 text-[10px] font-bold text-white">Agregar variante</button>
+          </div>
+          <div id="lista-add-variantes" class="space-y-2"></div>
+        </div>
         <div class="flex gap-2 justify-end">
-          <button id="btn-admin-cancelar-add" class="px-3 py-1.5 rounded-xl bg-zinc-100 text-xs">Cancelar</button>
-          <button id="btn-admin-guardar-add" class="px-3 py-1.5 rounded-xl bg-zinc-900 text-white font-bold text-xs">Guardar en Firebase</button>
+          <button id="btn-admin-cancelar-add" class="px-3 py-1.5 rounded-xl bg-red-500 hover:bg-red-600 text-white text-xs">Cancelar</button>
+          <button id="btn-admin-guardar-add" class="px-3 py-1.5 rounded-xl bg-green-600 hover:bg-green-700 text-white font-bold text-xs">Guardar</button>
         </div>
       </div>
 
@@ -666,6 +694,56 @@ function renderProductosCatalogoAdmin() {
   if (btnMostrarAdd && formWrapper) btnMostrarAdd.onclick = () => formWrapper.classList.toggle('hidden');
   if (btnCancelarAdd && formWrapper) btnCancelarAdd.onclick = () => formWrapper.classList.add('hidden');
 
+  const submenuCheck = document.getElementById('add-admin-es-submenu');
+  const variantesWrapper = document.getElementById('wrapper-add-variantes');
+  const variantesList = document.getElementById('lista-add-variantes');
+  const variantes = [];
+  const guardarValoresVariantes = () => {
+    if (!variantesList) return;
+    variantes.forEach((variante, index) => {
+      const nombreInput = variantesList.querySelector(`[data-variante-nombre="${index}"]`);
+      const precioInput = variantesList.querySelector(`[data-variante-precio="${index}"]`);
+      const stockInput = variantesList.querySelector(`[data-variante-stock="${index}"]`);
+      variante.nombre = nombreInput?.value || '';
+      variante.precio = precioInput?.value || '';
+      variante.stock = stockInput?.value || '';
+    });
+  };
+  const renderVariantes = () => {
+    if (!variantesList) return;
+    variantesList.innerHTML = variantes.map((_, index) => `
+      <div class="grid grid-cols-[1fr_6rem_6rem_auto] gap-2 items-center">
+        <input type="text" data-variante-nombre="${index}" value="${variantes[index].nombre || ''}" placeholder="Ej. Fresa" class="w-full rounded-xl border border-zinc-200 bg-white px-2 py-1.5 text-xs">
+        <input type="number" data-variante-precio="${index}" value="${variantes[index].precio || ''}" min="0" placeholder="Precio" class="w-full rounded-xl border border-zinc-200 bg-white px-2 py-1.5 text-xs">
+        <input type="number" data-variante-stock="${index}" value="${variantes[index].stock || ''}" min="0" placeholder="Stock" class="w-full rounded-xl border border-zinc-200 bg-white px-2 py-1.5 text-xs">
+        <button type="button" data-variante-delete="${index}" class="rounded-xl bg-red-50 px-2 py-1.5 text-[10px] font-bold text-red-600">Quitar</button>
+      </div>
+    `).join('');
+    variantesList.querySelectorAll('[data-variante-delete]').forEach((button) => {
+      button.onclick = () => {
+        guardarValoresVariantes();
+        variantes.splice(Number(button.dataset.varianteDelete), 1);
+        renderVariantes();
+      };
+    });
+  };
+  if (submenuCheck) {
+    submenuCheck.onchange = () => {
+      variantesWrapper?.classList.toggle('hidden', !submenuCheck.checked);
+      document.getElementById('wrapper-add-precio')?.classList.toggle('hidden', submenuCheck.checked);
+      document.getElementById('wrapper-add-stock-field')?.classList.toggle('hidden', submenuCheck.checked);
+      if (submenuCheck.checked && variantes.length === 0) {
+        variantes.push({});
+        renderVariantes();
+      }
+    };
+  }
+  document.getElementById('btn-add-variante')?.addEventListener('click', () => {
+    guardarValoresVariantes();
+    variantes.push({});
+    renderVariantes();
+  });
+
   if (btnGuardarAdd) {
     btnGuardarAdd.onclick = async () => {
       const nombreInput = document.getElementById('add-admin-nombre');
@@ -673,20 +751,40 @@ function renderProductosCatalogoAdmin() {
       const tipoInput = document.getElementById('add-admin-tipo');
       const stockInput = document.getElementById('add-admin-stock');
       const iconoSelect = document.getElementById('add-admin-icono');
+      const esSubmenu = Boolean(document.getElementById('add-admin-es-submenu')?.checked);
       if (!nombreInput || !precioInput || !tipoInput) return;
 
       const nombre = nombreInput.value.trim();
-      const precio = Number(precioInput.value);
+      const precioTexto = precioInput.value.trim();
+      const precio = Number(precioTexto);
       const tipo = tipoInput.value;
-      const stock = tipo === 'servicio' ? 0 : Number(stockInput?.value || 0);
-      const icono = tipo === 'servicio' ? '🎫' : (iconoSelect?.value || '📦');
-      if (!nombre || precio < 0) {
-        if (window.mostrarSnackbarMensaje) window.mostrarSnackbarMensaje('Ingresa datos válidos.', 'error'); else alert('Ingresa datos válidos.');
+      const stockTexto = stockInput?.value.trim() || '';
+      const icono = iconoSelect?.value || '';
+      const variantesGuardadas = esSubmenu
+        ? (guardarValoresVariantes(),
+          variantes.map((variante) => ({
+            nombre: variante.nombre.trim(),
+            precio: Number(variante.precio || precio),
+            stock: Number(variante.stock || 0)
+          })))
+            .filter((variante) => variante.nombre)
+        : [];
+      const stock = esSubmenu
+        ? variantesGuardadas.reduce((total, variante) => total + variante.stock, 0)
+        : (tipo === 'servicio' ? 0 : Number(stockTexto));
+      const camposVariantesValidos = variantesGuardadas.length > 0
+        && variantesGuardadas.length === variantes.length
+        && variantes.every((variante) => variante.nombre.trim() && variante.precio !== '' && Number(variante.precio) >= 0 && variante.stock !== '' && Number(variante.stock) >= 0);
+      const formularioValido = Boolean(nombre)
+        && Boolean(icono)
+        && (esSubmenu ? camposVariantesValidos : Boolean(precioTexto) && precio >= 0 && (tipo === 'servicio' || (Boolean(stockTexto) && stock >= 0)));
+      if (!formularioValido) {
+        if (window.mostrarSnackbarMensaje) window.mostrarSnackbarMensaje('Completa todos los campos obligatorios y todas las variantes.', 'error'); else alert('Completa todos los campos obligatorios y todas las variantes.');
         return;
       }
 
       try {
-        await addDoc(collection(db, 'productos'), { nombre, precio, tipo, stock, icono });
+        await addDoc(collection(db, 'productos'), { nombre, precio, tipo, stock, icono, esSubmenu, variantes: variantesGuardadas });
         if (formWrapper) formWrapper.classList.add('hidden');
         if (window.mostrarSnackbarMensaje) window.mostrarSnackbarMensaje(`Producto guardado: ${nombre}`, 'success'); else alert(`✅ ¡Guardado con éxito!\n"${nombre}" se ha registrado en Firestore.`);
       } catch (error) {
