@@ -1,5 +1,5 @@
 import { db } from './firebase.js';
-import { collection, onSnapshot, doc, setDoc, deleteDoc, getDoc, updateDoc, addDoc } from 'firebase/firestore';
+import { collection, onSnapshot, doc, setDoc, deleteDoc, getDoc, updateDoc, addDoc, writeBatch } from 'firebase/firestore';
 
 const contenedorPantallas = document.getElementById('contenedor-pantallas');
 const btnEstadisticas = document.getElementById('btn-estadisticas');
@@ -30,6 +30,57 @@ let chartDonaAdmin = null;
 let pendingAdminAction = null;
 let pendingAdminButton = null;
 const refServiciosPrecios = doc(db, 'configuracion', 'preciosServicios');
+const MENSAJE_ERROR_ADMIN = 'Error al procesar la solicitud. Verifica tu conexión e intenta de nuevo.';
+
+function mostrarToastAdmin(texto, variante = 'info') {
+  if (window.mostrarSnackbarMensaje) window.mostrarSnackbarMensaje(texto, variante, 3000);
+}
+
+function abrirModalAdmin({ mensaje, titulo = '', aceptar = 'Aceptar', cancelar = 'Cancelar', tipoEntrada = false, valorInicial = '' }) {
+  return new Promise((resolve) => {
+    const overlay = document.createElement('div');
+    overlay.className = 'fixed inset-0 z-[60] flex items-center justify-center bg-black/50 backdrop-blur-sm p-4';
+    overlay.innerHTML = `
+      <div class="w-full max-w-sm rounded-3xl bg-white p-6 shadow-2xl" role="dialog" aria-modal="true">
+        ${titulo ? `<h3 class="mb-2 text-lg font-black text-zinc-900">${titulo}</h3>` : ''}
+        <p class="mb-4 text-sm text-zinc-600">${mensaje}</p>
+        ${tipoEntrada ? '<input type="text" class="modal-admin-entry w-full rounded-xl border border-zinc-200 px-3 py-2 text-sm outline-none focus:border-red-500" />' : ''}
+        <div class="mt-5 flex gap-3">
+          <button type="button" data-modal-cancel class="flex-1 rounded-xl bg-zinc-200 px-4 py-2.5 text-sm font-bold text-zinc-800 hover:bg-zinc-300">${cancelar}</button>
+          <button type="button" data-modal-accept class="flex-1 rounded-xl bg-[#D32F2F] px-4 py-2.5 text-sm font-bold text-white hover:bg-red-700">${aceptar}</button>
+        </div>
+      </div>`;
+    document.body.appendChild(overlay);
+    const entrada = overlay.querySelector('.modal-admin-entry');
+    if (entrada) {
+      entrada.value = valorInicial;
+      entrada.focus();
+    }
+    const cerrar = (resultado) => {
+      document.removeEventListener('keydown', manejarEscape);
+      overlay.remove();
+      resolve(resultado);
+    };
+    const manejarEscape = (event) => {
+      if (event.key === 'Escape') cerrar(null);
+    };
+    overlay.addEventListener('click', (event) => {
+      if (event.target === overlay) cerrar(null);
+    });
+    overlay.querySelector('[data-modal-cancel]').onclick = () => cerrar(null);
+    overlay.querySelector('[data-modal-accept]').onclick = () => cerrar(entrada ? entrada.value.trim() : true);
+    document.addEventListener('keydown', manejarEscape);
+  });
+}
+
+async function confirmarAdmin(mensaje, titulo = 'Confirmar acción') {
+  return (await abrirModalAdmin({ mensaje, titulo })) === true;
+}
+
+async function solicitarTextoAdmin(mensaje, titulo = 'Ingresa la información') {
+  const resultado = await abrirModalAdmin({ mensaje, titulo, tipoEntrada: true });
+  return typeof resultado === 'string' ? resultado : null;
+}
 
 onSnapshot(collection(db, 'productos'), (snapshot) => {
   productosVentaRapidaAdmin = [];
@@ -131,6 +182,8 @@ function verificarFiltroSeguridadAcceso(funcionDestino, botonActivar) {
 function inicializarModalAccesoAdmin() {
   if (!modalAccesoAdmin || !modalAdminInput || !modalAdminError || !modalAdminSubmit || !modalAdminCancel || !modalAdminClose || !modalAdminForgot) return;
 
+  modalAccesoAdmin.classList.add('bg-black/50', 'backdrop-blur-sm');
+
   modalAdminSubmit.onclick = () => {
     const claveMaestra = datosSeguridadLocal?.password || 'Admin123';
     const contraseña = modalAdminInput.value.trim();
@@ -151,11 +204,17 @@ function inicializarModalAccesoAdmin() {
 
   modalAdminCancel.onclick = cerrarModalAccesoAdmin;
   modalAdminClose.onclick = cerrarModalAccesoAdmin;
+  modalAccesoAdmin.addEventListener('click', (event) => {
+    if (event.target === modalAccesoAdmin) cerrarModalAccesoAdmin();
+  });
+  document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape' && !modalAccesoAdmin.classList.contains('hidden')) cerrarModalAccesoAdmin();
+  });
   modalAdminForgot.onclick = async () => {
     const nacimientoMaestro = datosSeguridadLocal?.nacimiento || '2026-01-01';
-    const valor = prompt('🎂 Ingresa tu fecha de nacimiento (AAAA-MM-DD) para recuperar la clave:');
+    const valor = await solicitarTextoAdmin('Ingresa tu fecha de nacimiento (AAAA-MM-DD) para recuperar la clave.', 'Recuperar contraseña');
     if (valor === nacimientoMaestro) {
-      if (window.mostrarSnackbarMensaje) window.mostrarSnackbarMensaje(`Tu contraseña maestra es: ${datosSeguridadLocal?.password || 'Admin123'}`, 'info'); else alert(`Tu contraseña maestra es: ${datosSeguridadLocal?.password || 'Admin123'}`);
+      mostrarToastAdmin(`Tu contraseña maestra es: ${datosSeguridadLocal?.password || 'Admin123'}`, 'info');
       modalAdminError.classList.add('hidden');
     } else {
       modalAdminError.textContent = 'Fecha de nacimiento incorrecta.';
@@ -165,6 +224,33 @@ function inicializarModalAccesoAdmin() {
 }
 
 inicializarModalAccesoAdmin();
+
+async function anularVentaAdmin(idVenta) {
+  if (!(await confirmarAdmin('¿Deseas anular esta venta? Esto restablecerá el inventario si aplica.'))) return;
+
+  try {
+    const ventaSnap = await getDoc(doc(db, 'ventas', idVenta));
+    const batch = writeBatch(db);
+    if (ventaSnap.exists()) {
+      const ventaData = ventaSnap.data();
+      const productosArr = Array.isArray(ventaData.productosArr) ? ventaData.productosArr : [];
+      for (const item of productosArr) {
+        if (!item || !item.id) continue;
+        const productoRef = doc(db, 'productos', item.id);
+        const productoSnap = await getDoc(productoRef);
+        if (productoSnap.exists() && productoSnap.data().tipo !== 'servicio') {
+          batch.update(productoRef, { stock: Number(productoSnap.data().stock || 0) + Number(item.cantidad || 0) });
+        }
+      }
+    }
+    batch.delete(doc(db, 'ventas', idVenta));
+    await batch.commit();
+    mostrarToastAdmin('Venta cancelada e inventario reajustado', 'info');
+  } catch (error) {
+    console.error(error);
+    mostrarToastAdmin(MENSAJE_ERROR_ADMIN, 'error');
+  }
+}
 
 function cargarPantallaEstadisticas() {
   destruirGraficosEstructurales();
@@ -360,27 +446,7 @@ function procesarGraficosSlicers() {
         btn.onclick = async () => {
           const idVenta = btn.getAttribute('data-id');
           if (!idVenta) return;
-          if (!confirm('🚨 ¿Estás seguro de anular permanentemente esta venta? Se devolverá el stock correspondiente.')) return;
-
-          try {
-            const ventaSnap = await getDoc(doc(db, 'ventas', idVenta));
-            if (ventaSnap.exists()) {
-              const ventaData = ventaSnap.data();
-              const productosArr = Array.isArray(ventaData.productosArr) ? ventaData.productosArr : [];
-              for (const item of productosArr) {
-                if (!item || !item.id) continue;
-                const productoRef = doc(db, 'productos', item.id);
-                const productoSnap = await getDoc(productoRef);
-                if (productoSnap.exists() && productoSnap.data().tipo !== 'servicio') {
-                  await updateDoc(productoRef, { stock: Number(productoSnap.data().stock || 0) + Number(item.cantidad || 0) });
-                }
-              }
-            }
-            await deleteDoc(doc(db, 'ventas', idVenta));
-            if (window.mostrarSnackbarMensaje) window.mostrarSnackbarMensaje('✨ Venta de caja anulada con éxito.', 'info'); else alert('✨ Venta de caja anulada con éxito.');
-          } catch (error) {
-            console.error(error);
-          }
+          await anularVentaAdmin(idVenta);
         };
       });
     }
@@ -411,26 +477,7 @@ function procesarGraficosSlicers() {
         btn.onclick = async () => {
           const idVenta = btn.getAttribute('data-id');
           if (!idVenta) return;
-          if (!confirm('🚨 ¿Deseas anular esta venta mensual? Esto restablecerá el stock si aplica.')) return;
-          try {
-            const ventaSnap = await getDoc(doc(db, 'ventas', idVenta));
-            if (ventaSnap.exists()) {
-              const ventaData = ventaSnap.data();
-              const productosArr = Array.isArray(ventaData.productosArr) ? ventaData.productosArr : [];
-              for (const item of productosArr) {
-                if (!item || !item.id) continue;
-                const productoRef = doc(db, 'productos', item.id);
-                const productoSnap = await getDoc(productoRef);
-                if (productoSnap.exists() && productoSnap.data().tipo !== 'servicio') {
-                  await updateDoc(productoRef, { stock: Number(productoSnap.data().stock || 0) + Number(item.cantidad || 0) });
-                }
-              }
-            }
-            await deleteDoc(doc(db, 'ventas', idVenta));
-            if (window.mostrarSnackbarMensaje) window.mostrarSnackbarMensaje('✨ Venta mensual anulada con éxito.', 'info'); else alert('✨ Venta mensual anulada con éxito.');
-          } catch (error) {
-            console.error(error);
-          }
+          await anularVentaAdmin(idVenta);
         };
       });
     }
@@ -622,7 +669,7 @@ function renderServiciosAdmin() {
       if (!id || !input) return;
       const precio = Number(input.value);
       if (precio < 0) {
-        if (window.mostrarSnackbarMensaje) window.mostrarSnackbarMensaje('Ingresa un precio válido.', 'error'); else alert('Ingresa un precio válido.');
+        mostrarToastAdmin('Ingresa un precio válido.', 'error');
         return;
       }
 
@@ -632,10 +679,10 @@ function renderServiciosAdmin() {
         await setDoc(refServiciosPrecios, payload, { merge: true });
         preciosServiciosLocal = { ...preciosServiciosLocal, ...payload };
         renderServiciosAdmin();
-        if (window.mostrarSnackbarMensaje) window.mostrarSnackbarMensaje('Precio de servicio guardado.', 'success'); else alert('Precio de servicio guardado.');
+        mostrarToastAdmin('Precio de servicio guardado.', 'success');
       } catch (error) {
         console.error(error);
-        if (window.mostrarSnackbarMensaje) window.mostrarSnackbarMensaje('Error al guardar precio', 'error'); else alert('Error al guardar precio');
+        mostrarToastAdmin(MENSAJE_ERROR_ADMIN, 'error');
       }
     };
   });
@@ -677,14 +724,130 @@ function renderProductosCatalogoAdmin() {
           </select>
         </td>
         <td class="py-3 text-right">
-          <div class="inline-flex gap-1 justify-end">
+          <div class="inline-flex gap-1 justify-end flex-wrap justify-end">
             <button data-id="${p.id}" class="btn-admin-save-item bg-zinc-900 text-white px-2.5 py-1 rounded-xl text-[11px] font-bold">Guardar</button>
+            ${p.esSubmenu ? `<button data-submenu-edit="${p.id}" class="bg-amber-50 text-amber-700 px-2.5 py-1 rounded-xl text-[11px] font-bold">Variantes</button>` : ''}
             <button data-id="${p.id}" class="btn-admin-delete-item bg-red-50 text-red-600 px-2.5 py-1 rounded-xl text-[11px]">Eliminar</button>
           </div>
         </td>
       </tr>
     `)
     .join('');
+
+  tabla.querySelectorAll('[data-submenu-edit]').forEach((btn) => {
+    btn.onclick = () => {
+      const id = btn.getAttribute('data-submenu-edit');
+      const producto = productosVentaRapidaAdmin.find((item) => item.id === id);
+      if (producto) abrirEditorVariantesAdmin(producto);
+    };
+  });
+
+  function abrirEditorVariantesAdmin(producto) {
+    const variantesIniciales = Array.isArray(producto.variantes)
+      ? producto.variantes.map((variante) => ({
+          nombre: variante?.nombre || '',
+          precio: Number(variante?.precio ?? producto.precio ?? 0),
+          stock: Number(variante?.stock ?? 0)
+        }))
+      : [];
+    const variantes = [...variantesIniciales];
+    const overlay = document.createElement('div');
+    overlay.className = 'fixed inset-0 z-[60] flex items-center justify-center bg-black/50 backdrop-blur-sm p-4';
+
+    const renderEditor = () => {
+      overlay.innerHTML = `
+        <div class="w-full max-w-lg rounded-3xl bg-white p-5 shadow-2xl">
+          <div class="mb-4 flex items-center justify-between">
+            <div>
+              <h3 class="text-lg font-black text-zinc-900">Editar variantes</h3>
+              <p class="text-xs text-zinc-500">${producto.nombre}</p>
+            </div>
+            <button type="button" data-submenu-close class="text-xl text-zinc-400">✕</button>
+          </div>
+          <div class="space-y-3">
+            <div class="flex items-center justify-between">
+              <span class="text-[10px] font-bold uppercase text-zinc-500">Variantes</span>
+              <button type="button" data-submenu-add class="rounded-xl bg-zinc-900 px-2.5 py-1.5 text-[10px] font-bold text-white">Agregar</button>
+            </div>
+            <div id="submenu-editor-list" class="space-y-2 max-h-[350px] overflow-y-auto pr-1"></div>
+          </div>
+          <div class="mt-5 flex gap-3">
+            <button type="button" data-submenu-cancel class="flex-1 rounded-xl bg-zinc-200 px-4 py-2.5 text-sm font-bold text-zinc-800">Cancelar</button>
+            <button type="button" data-submenu-save class="flex-1 rounded-xl bg-[#D32F2F] px-4 py-2.5 text-sm font-bold text-white">Guardar</button>
+          </div>
+        </div>
+      `;
+
+      const list = overlay.querySelector('#submenu-editor-list');
+      list.innerHTML = variantes.map((variante, index) => `
+        <div class="grid grid-cols-[1.2fr_90px_90px_auto] gap-2 rounded-2xl border border-zinc-200 bg-zinc-50 p-2">
+          <input type="text" data-submenu-nombre="${index}" value="${variante.nombre}" placeholder="Nombre" class="w-full rounded-lg border border-zinc-200 bg-white px-2 py-1.5 text-xs outline-none focus:border-red-500" />
+          <input type="number" data-submenu-precio="${index}" value="${Number(variante.precio || 0)}" min="0" step="0.01" placeholder="Precio" class="w-full rounded-lg border border-zinc-200 bg-white px-2 py-1.5 text-xs outline-none focus:border-red-500" />
+          <input type="number" data-submenu-stock="${index}" value="${Number(variante.stock || 0)}" min="0" step="1" placeholder="Stock" class="w-full rounded-lg border border-zinc-200 bg-white px-2 py-1.5 text-xs outline-none focus:border-red-500" />
+          <button type="button" data-submenu-remove="${index}" class="rounded-lg bg-red-50 px-2 py-1.5 text-[10px] font-bold text-red-600">Quitar</button>
+        </div>
+      `).join('');
+
+      overlay.querySelectorAll('[data-submenu-remove]').forEach((button) => {
+        button.onclick = () => {
+          const index = Number(button.dataset.submenuRemove);
+          variantes.splice(index, 1);
+          renderEditor();
+        };
+      });
+
+      overlay.querySelector('[data-submenu-add]').onclick = () => {
+        variantes.push({ nombre: '', precio: Number(producto.precio || 0), stock: 0 });
+        renderEditor();
+      };
+
+      overlay.querySelector('[data-submenu-close]').onclick = () => overlay.remove();
+      overlay.querySelector('[data-submenu-cancel]').onclick = () => overlay.remove();
+      overlay.querySelector('[data-submenu-save]').onclick = async () => {
+        const datosValidos = variantes
+          .map((variante, index) => {
+            const nombre = (overlay.querySelector(`[data-submenu-nombre="${index}"]`)?.value || '').trim();
+            const precio = Number(overlay.querySelector(`[data-submenu-precio="${index}"]`)?.value || 0);
+            const stock = Number(overlay.querySelector(`[data-submenu-stock="${index}"]`)?.value || 0);
+            return { nombre, precio, stock };
+          })
+          .filter((variante) => variante.nombre)
+          .map((variante) => ({
+            nombre: variante.nombre,
+            precio: Number(variante.precio || 0),
+            stock: Number(variante.stock || 0)
+          }));
+
+        if (!datosValidos.length) {
+          mostrarToastAdmin('Agrega al menos una variante válida.', 'error');
+          return;
+        }
+
+        try {
+          const stockTotal = datosValidos.reduce((sum, variante) => sum + Number(variante.stock || 0), 0);
+          await updateDoc(doc(db, 'productos', producto.id), {
+            esSubmenu: true,
+            variantes: datosValidos,
+            stock: stockTotal,
+            precio: Number(datosValidos[0].precio || producto.precio || 0)
+          });
+          overlay.remove();
+          renderProductosCatalogoAdmin();
+          mostrarToastAdmin('Variantes actualizadas.', 'success');
+        } catch (error) {
+          console.error(error);
+          mostrarToastAdmin(MENSAJE_ERROR_ADMIN, 'error');
+        }
+      };
+    };
+
+    document.body.appendChild(overlay);
+    renderEditor();
+    overlay.addEventListener('click', (event) => { if (event.target === overlay) overlay.remove(); });
+    document.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape') overlay.remove();
+    }, { once: true });
+  }
 
   const formWrapper = document.getElementById('wrapper-form-add-producto');
   const btnMostrarAdd = document.getElementById('btn-mostrar-formulario-add');
@@ -779,17 +942,17 @@ function renderProductosCatalogoAdmin() {
         && Boolean(icono)
         && (esSubmenu ? camposVariantesValidos : Boolean(precioTexto) && precio >= 0 && (tipo === 'servicio' || (Boolean(stockTexto) && stock >= 0)));
       if (!formularioValido) {
-        if (window.mostrarSnackbarMensaje) window.mostrarSnackbarMensaje('Completa todos los campos obligatorios y todas las variantes.', 'error'); else alert('Completa todos los campos obligatorios y todas las variantes.');
+        mostrarToastAdmin('Completa todos los campos obligatorios y todas las variantes.', 'error');
         return;
       }
 
       try {
         await addDoc(collection(db, 'productos'), { nombre, precio, tipo, stock, icono, esSubmenu, variantes: variantesGuardadas });
         if (formWrapper) formWrapper.classList.add('hidden');
-        if (window.mostrarSnackbarMensaje) window.mostrarSnackbarMensaje(`Producto guardado: ${nombre}`, 'success'); else alert(`✅ ¡Guardado con éxito!\n"${nombre}" se ha registrado en Firestore.`);
+        mostrarToastAdmin(`Producto guardado: ${nombre}`, 'success');
       } catch (error) {
         console.error(error);
-        if (window.mostrarSnackbarMensaje) window.mostrarSnackbarMensaje('Error al guardar producto', 'error'); else alert('Error al guardar producto');
+        mostrarToastAdmin(MENSAJE_ERROR_ADMIN, 'error');
       }
     };
   }
@@ -812,10 +975,10 @@ function renderProductosCatalogoAdmin() {
 
       try {
         await updateDoc(doc(db, 'productos', id), updateData);
-        if (window.mostrarSnackbarMensaje) window.mostrarSnackbarMensaje('Cambios guardados', 'success'); else alert('Cambios respaldados de forma permanente.');
+        mostrarToastAdmin('Cambios guardados', 'success');
       } catch (error) {
         console.error(error);
-        if (window.mostrarSnackbarMensaje) window.mostrarSnackbarMensaje('Error al guardar cambios', 'error'); else alert('Error al guardar cambios');
+        mostrarToastAdmin(MENSAJE_ERROR_ADMIN, 'error');
       }
     };
   });
@@ -824,11 +987,13 @@ function renderProductosCatalogoAdmin() {
     btn.onclick = async () => {
       const id = btn.getAttribute('data-id');
       if (!id) return;
-      if (!confirm('¿Deseas eliminar este producto de la nube permanentemente?')) return;
+      if (!(await confirmarAdmin('¿Deseas eliminar este producto de la nube permanentemente?', 'Eliminar producto'))) return;
       try {
         await deleteDoc(doc(db, 'productos', id));
+        mostrarToastAdmin('Producto eliminado.', 'success');
       } catch (error) {
         console.error(error);
+        mostrarToastAdmin(MENSAJE_ERROR_ADMIN, 'error');
       }
     };
   });
@@ -882,7 +1047,7 @@ function cargarPantallaSeguridad() {
     e.preventDefault();
     const np = document.getElementById('new-p')?.value.trim();
     if (!np || np.length < 4) {
-      if (window.mostrarSnackbarMensaje) window.mostrarSnackbarMensaje('Mínimo 4 caracteres', 'error'); else alert('Mínimo 4 caracteres');
+      mostrarToastAdmin('Mínimo 4 caracteres', 'error');
       return;
     }
     try {
@@ -894,10 +1059,11 @@ function cargarPantallaSeguridad() {
         { password: np, nacimiento: nacimiento, ultimaActualizacion: new Date().toISOString() },
         { merge: true }
       );
-      if (window.mostrarSnackbarMensaje) window.mostrarSnackbarMensaje('Contraseña modificada con éxito.', 'success'); else alert('Contraseña modificada con éxito.');
+      mostrarToastAdmin('Contraseña modificada con éxito.', 'success');
       form.reset();
     } catch (error) {
       console.error(error);
+      mostrarToastAdmin(MENSAJE_ERROR_ADMIN, 'error');
     }
   };
 
@@ -922,7 +1088,7 @@ function cargarPantallaSeguridad() {
       const preguntaId = document.getElementById('seg-pregunta-select')?.value;
       const respuesta = document.getElementById('seg-respuesta-input')?.value?.trim();
       if (!preguntaId || !respuesta) {
-        if (window.mostrarSnackbarMensaje) window.mostrarSnackbarMensaje('Seleccione pregunta y escriba la respuesta', 'error'); else alert('Seleccione pregunta y escriba la respuesta');
+        mostrarToastAdmin('Seleccione pregunta y escriba la respuesta', 'error');
         return;
       }
       try {
@@ -931,10 +1097,11 @@ function cargarPantallaSeguridad() {
           { seguridadPreguntaId: preguntaId, seguridadRespuesta: respuesta, ultimaActualizacion: new Date().toISOString() },
           { merge: true }
         );
-        if (window.mostrarSnackbarMensaje) window.mostrarSnackbarMensaje('Pregunta de seguridad guardada.', 'success'); else alert('Pregunta de seguridad guardada.');
+        mostrarToastAdmin('Pregunta de seguridad guardada.', 'success');
         document.getElementById('seg-respuesta-input').value = '';
       } catch (error) {
         console.error(error);
+        mostrarToastAdmin(MENSAJE_ERROR_ADMIN, 'error');
       }
     };
   }

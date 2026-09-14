@@ -467,15 +467,18 @@ function renderizarBotonesPOS() {
   grid.innerHTML = listaItems.map(prod => {
     const iconoClass = esEmoji(prod.icono) ? '' : 'material-symbols-outlined';
     const esServicio = prod.tipo === 'servicio';
-    const agotado = !esServicio && Number(prod.stock || 0) <= 0;
-    const stockBajo = !esServicio && Number(prod.stock || 0) <= 3;
+    const stockTotal = esServicio ? 0 : (prod.esSubmenu && Array.isArray(prod.variantes)
+      ? prod.variantes.reduce((sum, variante) => sum + Number(variante?.stock ?? 0), 0)
+      : Number(prod.stock ?? 0));
+    const agotado = !esServicio && stockTotal <= 0;
+    const stockBajo = !esServicio && stockTotal <= 3;
     return `
       <button data-id="${prod.id}" ${agotado ? 'disabled' : ''} class="btn-producto-pos w-full min-h-[140px] flex flex-col items-center justify-center p-4 bg-white border border-zinc-200 rounded-3xl hover:border-[#D32F2F] transition-all transform active:scale-95 group shadow-sm disabled:opacity-40 disabled:bg-zinc-100 disabled:border-zinc-200 disabled:pointer-events-none">
         <div class="w-12 h-12 bg-zinc-100 group-hover:bg-red-50 rounded-2xl flex items-center justify-center text-zinc-700 group-hover:text-[#D32F2F] transition mb-2">
           <span class="${iconoClass} text-xl">${prod.icono || 'box'}</span>
         </div>
         <span class="font-bold text-zinc-800 text-xs text-center truncate w-full">${prod.nombre}</span>
-        <span class="text-[10px] font-semibold ${agotado || stockBajo ? 'text-red-500 font-bold' : 'text-zinc-400'} mb-1.5">${esServicio ? 'Ilimitado 🎫' : (agotado ? 'Agotado' : `Stock: ${prod.stock ?? 0}`)}</span>
+        <span class="text-[10px] font-semibold ${agotado || stockBajo ? 'text-red-500 font-bold' : 'text-zinc-400'} mb-1.5">${esServicio ? 'Ilimitado 🎫' : (agotado ? 'Agotado' : `Stock: ${stockTotal}`)}</span>
         ${prod.esSubmenu ? '<span class="text-xl font-black text-zinc-900" aria-label="Abrir variantes">&gt;</span>' : `<span class="text-[11px] px-2.5 py-0.5 bg-zinc-900 text-white rounded-full font-bold">$${prod.precio}</span>`}
       </button>
     `;
@@ -509,7 +512,10 @@ function abrirModalVariantes(producto) {
       <div class="space-y-2">
         ${variantes.map((variante, index) => `
           <button type="button" data-variante-index="${index}" class="flex w-full items-center justify-between rounded-2xl border border-zinc-200 px-4 py-3 text-left hover:border-red-500">
-            <span class="font-bold text-zinc-800">${variante.nombre}</span>
+            <div class="flex flex-col">
+              <span class="font-bold text-zinc-800">${variante.nombre}</span>
+              <span class="text-[10px] text-zinc-500">Stock: ${Number(variante.stock ?? producto.stock ?? 0)}</span>
+            </div>
             <span class="text-xs font-black">$${Number(variante.precio ?? producto.precio).toFixed(2)}</span>
           </button>
         `).join('')}
@@ -608,6 +614,7 @@ function configurarEventosPago() {
   const mixtoResultado = document.getElementById('mixto-resultado');
   const inputMonto = document.getElementById('monto-recibido');
   const btnFinalizar = document.getElementById('btn-finalizar-compra');
+  let ventaEnProceso = false;
 
   if (!btnEfectivo || !btnTarjeta) return;
 
@@ -772,6 +779,7 @@ function configurarEventosPago() {
   };
 
   btnFinalizar.onclick = async () => {
+    if (ventaEnProceso) return;
     if (carrito.length === 0) {
       mostrarSnackbarMensaje('El carrito está vacío.', 'error', 2500);
       return;
@@ -792,6 +800,10 @@ function configurarEventosPago() {
       mostrarSnackbarMensaje('El desglose mixto debe sumar exactamente el total.', 'error', 2500);
       return;
     }
+
+    ventaEnProceso = true;
+    btnFinalizar.disabled = true;
+    btnFinalizar.classList.add('opacity-50', 'cursor-not-allowed');
 
     try {
       const conceptoStr = carrito.map(i => `${i.cantidad}x ${i.nombre}`).join(', ');
@@ -826,13 +838,21 @@ function configurarEventosPago() {
       await marcarActividadDB();
       if (window.confetti) window.confetti({ particleCount: 80, spread: 50 });
       mostrarSnackbarMensaje('Venta procesada e inventario actualizado', 'success', 3000);
-      
+
       carrito = [];
-      inputMonto.value = "";
+      if (inputMonto) inputMonto.value = '';
+      if (montoMixtoEfectivo) montoMixtoEfectivo.value = '';
+      if (montoMixtoTarjeta) montoMixtoTarjeta.value = '';
+      const divCambio = document.getElementById('cambio-resultado');
+      if (divCambio) divCambio.textContent = 'Cambio: $0.00';
       renderizarCarrito();
     } catch (e) {
       console.error(e);
       mostrarSnackbarMensaje('Error al guardar venta en la nube', 'error', 3000);
+    } finally {
+      ventaEnProceso = false;
+      btnFinalizar.disabled = false;
+      btnFinalizar.classList.remove('opacity-50', 'cursor-not-allowed');
     }
   };
 }
@@ -875,7 +895,7 @@ window.mostrarSnackbarMensaje = mostrarSnackbarMensaje;
 function mostrarConfirmacion(texto) {
   return new Promise((resolve) => {
     const overlay = document.createElement('div');
-    overlay.className = 'fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4';
+    overlay.className = 'fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4';
     overlay.innerHTML = `
       <div class="bg-white rounded-2xl p-5 max-w-sm w-full text-center shadow-lg">
         <p class="text-sm text-zinc-700 mb-4">${texto}</p>
