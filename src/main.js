@@ -501,6 +501,50 @@ function obtenerItemsPos() {
   ];
 }
 
+function normalizarTexto(value) {
+  return String(value ?? '').trim().toLowerCase();
+}
+
+function obtenerCantidadEnCarritoPorVariante(productoId, varianteNombre = null) {
+  return carrito.reduce((total, item) => {
+    const itemProductoId = String(item?.productoId || item?.id || '');
+    const itemVariante = normalizarTexto(item?.variante || '');
+    const itemId = String(item?.id || '');
+    const claveActual = normalizarTexto(varianteNombre || '');
+
+    const coincideProducto = itemProductoId === String(productoId) || itemId === String(productoId);
+    const coincideVariante = !claveActual || itemVariante === claveActual;
+
+    return coincideProducto && coincideVariante ? total + Number(item?.cantidad || 0) : total;
+  }, 0);
+}
+
+function obtenerStockDisponibleProducto(producto, varianteNombre = null) {
+  if (!producto || producto.tipo === 'servicio') return 0;
+
+  if (producto.esSubmenu && Array.isArray(producto.variantes)) {
+    if (varianteNombre) {
+      const variante = producto.variantes.find((item) => {
+        const nombre = typeof item === 'string' ? item : (item?.nombre || '');
+        return normalizarTexto(nombre) === normalizarTexto(varianteNombre);
+      });
+      const base = Number(typeof variante === 'string' ? 0 : (variante?.stock ?? producto.stock ?? 0));
+      return Math.max(0, base - obtenerCantidadEnCarritoPorVariante(producto.id, varianteNombre));
+    }
+
+    return producto.variantes.reduce((total, variante) => {
+      const nombre = typeof variante === 'string' ? variante : (variante?.nombre || '');
+      const base = Number(typeof variante === 'string' ? 0 : (variante?.stock ?? 0));
+      const reservado = obtenerCantidadEnCarritoPorVariante(producto.id, nombre);
+      return total + Math.max(0, base - reservado);
+    }, 0);
+  }
+
+  const base = Number(producto.stock ?? 0);
+  const reservado = obtenerCantidadEnCarritoPorVariante(producto.id);
+  return Math.max(0, base - reservado);
+}
+
 function renderizarBotonesPOS() {
   const grid = document.getElementById('grid-productos-pos'); if (!grid) return;
   const termino = (document.getElementById('buscador-productos-pos')?.value || '').trim().toLowerCase();
@@ -522,18 +566,16 @@ function renderizarBotonesPOS() {
   grid.innerHTML = listaItems.map(prod => {
     const iconoClass = esEmoji(prod.icono) ? '' : 'material-symbols-outlined';
     const esServicio = prod.tipo === 'servicio';
-    const stockTotal = esServicio ? 0 : (prod.esSubmenu && Array.isArray(prod.variantes)
-      ? prod.variantes.reduce((sum, variante) => sum + Number(variante?.stock ?? 0), 0)
-      : Number(prod.stock ?? 0));
+    const stockTotal = esServicio ? 0 : obtenerStockDisponibleProducto(prod);
     const agotado = !esServicio && stockTotal <= 0;
-    const stockBajo = !esServicio && stockTotal <= 3;
+    const stockBajo = !esServicio && stockTotal > 0 && stockTotal <= 3;
     return `
       <button data-id="${prod.id}" ${agotado ? 'disabled' : ''} class="btn-producto-pos w-full min-h-[140px] flex flex-col items-center justify-center p-4 bg-white border border-zinc-200 rounded-3xl hover:border-[#D32F2F] transition-all transform active:scale-95 group shadow-sm disabled:opacity-40 disabled:bg-zinc-100 disabled:border-zinc-200 disabled:pointer-events-none">
         <div class="w-12 h-12 bg-zinc-100 group-hover:bg-red-50 rounded-2xl flex items-center justify-center text-zinc-700 group-hover:text-[#D32F2F] transition mb-2">
           <span class="${iconoClass} text-xl">${prod.icono || 'box'}</span>
         </div>
         <span class="font-bold text-zinc-800 text-xs text-center truncate w-full">${prod.nombre}</span>
-        <span class="text-[10px] font-semibold ${agotado || stockBajo ? 'text-red-500 font-bold' : 'text-zinc-400'} mb-1.5">${esServicio ? 'Ilimitado 🎫' : (agotado ? 'Agotado' : `Stock: ${stockTotal}`)}</span>
+        <span class="text-[10px] font-semibold ${agotado ? 'text-red-500 font-bold' : stockBajo ? 'text-red-500 font-bold' : 'text-zinc-400'} mb-1.5">${esServicio ? 'Ilimitado 🎫' : (agotado ? 'Sin stock' : stockBajo ? `Stock bajo: ${stockTotal}` : `Stock: ${stockTotal}`)}</span>
         ${prod.esSubmenu ? '<span class="text-xl font-black text-zinc-900" aria-label="Abrir variantes">&gt;</span>' : `<span class="text-[11px] px-2.5 py-0.5 bg-zinc-900 text-white rounded-full font-bold">$${prod.precio}</span>`}
       </button>
     `;
@@ -565,15 +607,21 @@ function abrirModalVariantes(producto) {
         <button type="button" data-cerrar-variantes class="text-xl text-zinc-400">✕</button>
       </div>
       <div class="space-y-2">
-        ${variantes.map((variante, index) => `
-          <button type="button" data-variante-index="${index}" class="flex w-full items-center justify-between rounded-2xl border border-zinc-200 px-4 py-3 text-left hover:border-red-500">
-            <div class="flex flex-col">
-              <span class="font-bold text-zinc-800">${variante.nombre}</span>
-              <span class="text-[10px] text-zinc-500">Stock: ${Number(variante.stock ?? producto.stock ?? 0)}</span>
-            </div>
-            <span class="text-xs font-black">$${Number(variante.precio ?? producto.precio).toFixed(2)}</span>
-          </button>
-        `).join('')}
+        ${variantes.map((variante, index) => {
+          const nombreVariante = String(variante.nombre || '').trim();
+          const stockDisponible = obtenerStockDisponibleProducto(producto, nombreVariante);
+          const agotado = stockDisponible <= 0;
+          const stockBajo = stockDisponible > 0 && stockDisponible <= 3;
+          return `
+            <button type="button" data-variante-index="${index}" ${agotado ? 'disabled' : ''} class="flex w-full items-center justify-between rounded-2xl border border-zinc-200 px-4 py-3 text-left hover:border-red-500 disabled:opacity-50 disabled:cursor-not-allowed">
+              <div class="flex flex-col">
+                <span class="font-bold text-zinc-800">${variante.nombre}</span>
+                <span class="text-[10px] ${agotado ? 'text-red-500 font-bold' : stockBajo ? 'text-red-500 font-bold' : 'text-zinc-500'}">${agotado ? 'Sin stock' : stockBajo ? `Stock bajo: ${stockDisponible}` : `Stock: ${stockDisponible}`}</span>
+              </div>
+              <span class="text-xs font-black">$${Number(variante.precio ?? producto.precio).toFixed(2)}</span>
+            </button>
+          `;
+        }).join('')}
       </div>
     </div>
   `;
@@ -587,6 +635,11 @@ function abrirModalVariantes(producto) {
     button.onclick = () => {
       const variante = variantes[Number(button.dataset.varianteIndex)];
       const nombreVariante = String(variante.nombre || '').trim();
+      const stockDisponible = obtenerStockDisponibleProducto(producto, nombreVariante);
+      if (stockDisponible <= 0) {
+        mostrarSnackbarMensaje('No hay más stock disponible para esta variante.', 'error', 2500);
+        return;
+      }
       agregarAlCarrito({
         ...producto,
         ...variante,
@@ -634,17 +687,31 @@ async function decrementarStockProducto(item) {
 }
 
 function agregarAlCarrito(producto) {
+  const productoIdBase = producto?.productoId || producto?.id;
+  const varianteNombre = producto?.variante ? String(producto.variante).trim() : null;
+  const stockBase = producto?.tipo === 'servicio' ? Number.POSITIVE_INFINITY : Number(producto?.stock ?? 0);
+  const cantidadActual = obtenerCantidadEnCarritoPorVariante(productoIdBase, varianteNombre);
+  const stockDisponible = producto?.tipo === 'servicio' ? Number.POSITIVE_INFINITY : Math.max(0, stockBase - cantidadActual);
+
   const existe = carrito.find(item => item.id === producto.id);
-  if (existe) {
-    if (producto.tipo !== 'servicio' && existe.cantidad >= Number(producto.stock || 0)) {
-      mostrarSnackbarMensaje('Alcanzaste el límite del stock disponible', 'error', 2500);
+  if (producto.tipo !== 'servicio') {
+    if (stockDisponible <= 0) {
+      mostrarSnackbarMensaje('Sin stock disponible para este producto.', 'error', 2500);
       return;
     }
+    if (existe && cantidadActual >= stockBase) {
+      mostrarSnackbarMensaje('Stock bajo: solo quedan pocas unidades disponibles.', 'error', 2500);
+      return;
+    }
+  }
+
+  if (existe) {
     existe.cantidad++;
   } else {
     carrito.push({ ...producto, cantidad: 1 });
   }
   renderizarCarrito();
+  renderizarBotonesPOS();
 }
 
 function renderizarCarrito() {
@@ -685,6 +752,7 @@ function renderizarCarrito() {
       const idx = Number(btn.getAttribute('data-index'));
       carrito.splice(idx, 1);
       renderizarCarrito();
+      renderizarBotonesPOS();
     };
   });
 }
@@ -779,14 +847,26 @@ function configurarEventosPago() {
   if (btnAbono) {
     btnAbono.onclick = async () => {
       metodoPagoActual = 'Abono';
-      btnFinalizar.disabled = false;
-      btnFinalizar.classList.remove('opacity-50', 'cursor-not-allowed');
+      btnFinalizar.disabled = true;
+      btnFinalizar.classList.add('opacity-50', 'cursor-not-allowed');
       // Abrir modal de abonos y obtener cliente + abono inicial
       const total = carrito.reduce((sum, i) => sum + (i.precio * i.cantidad), 0);
       try {
         const resultado = await inicializarModalAbonos(total);
-        if (!resultado || !resultado.abonoInicial) return; // cancelado o inválido
+        if (!resultado || !resultado.abonoInicial) {
+          btnFinalizar.disabled = false;
+          btnFinalizar.classList.remove('opacity-50', 'cursor-not-allowed');
+          return;
+        }
         const { cliente, abonoInicial } = resultado;
+
+        const validacion = validarMontoAbono(abonoInicial, total);
+        if (!validacion.valido) {
+          btnFinalizar.disabled = false;
+          btnFinalizar.classList.remove('opacity-50', 'cursor-not-allowed');
+          mostrarSnackbarMensaje(validacion.mensaje, 'error', 3000);
+          return;
+        }
 
         // Construir objeto venta con estado pendiente
         const ventaObj = {
@@ -967,6 +1047,20 @@ function mostrarSnackbarMensaje(texto, variante = 'info', duracion = 2800) {
   setTimeout(() => { wrap.remove(); }, duracion);
 }
 
+function validarMontoAbono(monto, totalCarrito) {
+  const valor = Number(monto);
+  if (Number.isNaN(valor) || valor <= 0) {
+    return { valido: false, mensaje: 'Abono inválido.' };
+  }
+  if (valor >= Number(totalCarrito)) {
+    return {
+      valido: false,
+      mensaje: `No se puede abonar el total. El producto cuesta $${Number(totalCarrito).toFixed(2)} y debe quedar un saldo pendiente.`
+    };
+  }
+  return { valido: true, mensaje: '' };
+}
+
 // Exponer la función de notificaciones para que otros módulos (admin.js) la usen
 window.mostrarSnackbarMensaje = mostrarSnackbarMensaje;
 
@@ -1020,7 +1114,11 @@ async function inicializarModalAbonos(totalCarrito, callbackConfirmar) {
       btnOk.onclick = () => {
         const cliente = inCliente.value.trim();
         const abono = Number(inMonto.value);
-        if (isNaN(abono) || abono <= 0 || abono > totalCarrito) { mostrarSnackbarMensaje('Abono inválido', 'error', 2200); return; }
+        const validacion = validarMontoAbono(abono, totalCarrito);
+        if (!validacion.valido) {
+          mostrarSnackbarMensaje(validacion.mensaje, 'error', 2600);
+          return;
+        }
         overlay.remove(); if (callbackConfirmar && typeof callbackConfirmar === 'function') callbackConfirmar({ cliente, abonoInicial: abono }); resolve({ cliente, abonoInicial: abono });
       };
       return;
@@ -1048,12 +1146,14 @@ async function inicializarModalAbonos(totalCarrito, callbackConfirmar) {
     };
 
     const validarYActualizar = () => {
-      if (!btnAceptar) return;
-      const v = Number(inputAbono ? inputAbono.value : 0);
-      const valido = !(isNaN(v) || v <= 0 || v > totalCarrito);
+      if (!btnAceptar || !inputAbono) return;
+      const v = Number(inputAbono.value || 0);
+      const validacion = validarMontoAbono(v, totalCarrito);
+      const valido = validacion.valido;
       if (!valido) {
         btnAceptar.disabled = true;
         btnAceptar.classList.add('opacity-50','pointer-events-none');
+        if (saldoDisplay) saldoDisplay.textContent = `$${Math.max(0, totalCarrito - (Number.isFinite(v) ? v : 0)).toFixed(2)}`;
       } else {
         btnAceptar.disabled = false;
         btnAceptar.classList.remove('opacity-50','pointer-events-none');
@@ -1065,6 +1165,9 @@ async function inicializarModalAbonos(totalCarrito, callbackConfirmar) {
         const v = Number(inputAbono.value || 0);
         const saldo = Math.max(0, totalCarrito - (isNaN(v) ? 0 : v));
         if (saldoDisplay) saldoDisplay.textContent = `$${saldo.toFixed(2)}`;
+        if (v >= totalCarrito && v > 0) {
+          mostrarSnackbarMensaje(`No se puede abonar el total. El producto cuesta $${totalCarrito.toFixed(2)} y debe quedar un saldo pendiente.`, 'error', 2600);
+        }
         validarYActualizar();
       };
     }
@@ -1077,7 +1180,11 @@ async function inicializarModalAbonos(totalCarrito, callbackConfirmar) {
       btnAceptar.onclick = () => {
         const cliente = inputCliente ? inputCliente.value.trim() : '';
         const abono = inputAbono ? Number(inputAbono.value) : 0;
-        if (isNaN(abono) || abono <= 0 || abono > totalCarrito) { mostrarSnackbarMensaje('Abono inválido', 'error', 2500); return; }
+        const validacion = validarMontoAbono(abono, totalCarrito);
+        if (!validacion.valido) {
+          mostrarSnackbarMensaje(validacion.mensaje, 'error', 2600);
+          return;
+        }
         modal.classList.add('hidden'); limpiarListeners(); if (callbackConfirmar && typeof callbackConfirmar === 'function') callbackConfirmar({ cliente, abonoInicial: abono }); resolve({ cliente, abonoInicial: abono });
       };
     }
@@ -1148,7 +1255,7 @@ function cargarPantallaCuentasPorCobrar() {
         html = `<tr><td colspan="6" class="py-4 text-center text-zinc-400">No hay cuentas por cobrar.</td></tr>`;
       } else {
         html = filteredRemote.map(r => `
-          <tr class="border-b hover:bg-zinc-50"><td class="py-3 pl-2 font-bold text-zinc-800">${r.clienteNombre || 'Sin cliente'}</td><td>${r.concepto || r.tipo || ''}</td><td class="py-3 text-right font-black">$${(r.montoTotal||0).toFixed(2)}</td><td class="py-3 text-right">$${(r.montoPagado||0).toFixed(2)}</td><td class="py-3 text-right text-red-600">$${(r.saldoPendiente||0).toFixed(2)}</td><td class="py-3 text-right pr-2"><button data-id="${r.id}" data-saldo="${(r.saldoPendiente||0).toFixed(2)}" class="btn-registrar-abono bg-emerald-600 text-white px-3 py-1 rounded-lg text-[12px]">Registrar Abono</button></td></tr>
+          <tr class="border-b hover:bg-zinc-50"><td class="py-3 pl-2 font-bold text-zinc-800">${r.clienteNombre || 'Sin cliente'}</td><td>${r.concepto || r.tipo || ''}</td><td class="py-3 text-right font-black">$${(r.montoTotal||0).toFixed(2)}</td><td class="py-3 text-right">$${(r.montoPagado||0).toFixed(2)}</td><td class="py-3 text-right text-red-600">$${(r.saldoPendiente||0).toFixed(2)}</td><td class="py-3 text-right pr-2"><div class="flex justify-end gap-2"><button data-id="${r.id}" data-saldo="${(r.saldoPendiente||0).toFixed(2)}" class="btn-registrar-abono bg-emerald-600 text-white px-3 py-1 rounded-lg text-[12px]">Registrar Abono</button><button data-id="${r.id}" class="btn-borrar-deuda bg-red-600 text-white px-3 py-1 rounded-lg text-[12px]">Borrar</button></div></td></tr>
         `).join('');
 
         if (filteredLocal.length) html += `<tr><td colspan="6" class="py-2 text-xs text-zinc-400">&nbsp;</td></tr>`;
@@ -1160,7 +1267,7 @@ function cargarPantallaCuentasPorCobrar() {
           const montoPagado = Number(lv.montoPagado || 0).toFixed(2);
           const saldo = Number(lv.saldoPendiente || (Number(lv.montoTotal || lv.monto || 0) - Number(lv.montoPagado || 0))).toFixed(2);
           html += `
-            <tr class="border-b hover:bg-zinc-50 opacity-90"><td class="py-3 pl-2 font-bold text-zinc-800">${cliente} <span class="ml-2 text-[10px] text-amber-500">(offline)</span></td><td>${concepto}</td><td class="py-3 text-right font-black">$${montoTotal}</td><td class="py-3 text-right">$${montoPagado}</td><td class="py-3 text-right text-red-600">$${saldo}</td><td class="py-3 text-right pr-2"><button data-local-index="${idx}" data-saldo="${saldo}" class="btn-registrar-abono-local bg-amber-600 text-white px-3 py-1 rounded-lg text-[12px]">Registrar Abono</button></td></tr>
+            <tr class="border-b hover:bg-zinc-50 opacity-90"><td class="py-3 pl-2 font-bold text-zinc-800">${cliente} <span class="ml-2 text-[10px] text-amber-500">(offline)</span></td><td>${concepto}</td><td class="py-3 text-right font-black">$${montoTotal}</td><td class="py-3 text-right">$${montoPagado}</td><td class="py-3 text-right text-red-600">$${saldo}</td><td class="py-3 text-right pr-2"><div class="flex justify-end gap-2"><button data-local-index="${idx}" data-saldo="${saldo}" class="btn-registrar-abono-local bg-amber-600 text-white px-3 py-1 rounded-lg text-[12px]">Registrar Abono</button><button data-local-index="${idx}" class="btn-borrar-deuda-local bg-red-600 text-white px-3 py-1 rounded-lg text-[12px]">Borrar</button></div></td></tr>
           `;
         });
       }
@@ -1175,12 +1282,50 @@ function cargarPantallaCuentasPorCobrar() {
         };
       });
 
+      tabla.querySelectorAll('.btn-borrar-deuda').forEach(btn => {
+        btn.onclick = async () => {
+          const id = btn.getAttribute('data-id');
+          if (!id) return;
+          const confirmado = await mostrarConfirmacion('¿Deseas borrar esta deuda? Esta acción elimina la cuenta pendiente.');
+          if (!confirmado) return;
+          try {
+            await deleteDoc(doc(db, 'ventas', id));
+            mostrarSnackbarMensaje('Deuda eliminada correctamente.', 'success', 2500);
+          } catch (error) {
+            console.error('Error al borrar deuda:', error);
+            mostrarSnackbarMensaje('No se pudo borrar la deuda.', 'error', 2500);
+          }
+        };
+      });
+
       // Handlers para ventas offline locales
       tabla.querySelectorAll('.btn-registrar-abono-local').forEach(btn => {
         btn.onclick = () => {
           const idx = Number(btn.getAttribute('data-local-index'));
           const saldo = Number(btn.getAttribute('data-saldo'));
           if (window.registrarAbonoClienteLocal) window.registrarAbonoClienteLocal(idx, saldo);
+        };
+      });
+
+      tabla.querySelectorAll('.btn-borrar-deuda-local').forEach(btn => {
+        btn.onclick = async () => {
+          const idx = Number(btn.getAttribute('data-local-index'));
+          if (!Number.isInteger(idx) || idx < 0) return;
+          const confirmado = await mostrarConfirmacion('¿Deseas borrar esta deuda local?');
+          if (!confirmado) return;
+          try {
+            const ventasPend = JSON.parse(localStorage.getItem('ventas_offline_pending') || '[]');
+            if (Array.isArray(ventasPend) && ventasPend[idx]) {
+              ventasPend.splice(idx, 1);
+              localStorage.setItem('ventas_offline_pending', JSON.stringify(ventasPend));
+            }
+            if (typeof actualizarBadgePendientes === 'function') actualizarBadgePendientes();
+            mostrarSnackbarMensaje('Deuda local eliminada.', 'success', 2500);
+            cargarPantallaCuentasPorCobrar();
+          } catch (error) {
+            console.error('Error al borrar deuda local:', error);
+            mostrarSnackbarMensaje('No se pudo borrar la deuda local.', 'error', 2500);
+          }
         };
       });
     };
