@@ -283,7 +283,10 @@ function cargarPantallaEstadisticas() {
 
       <div class="bg-white border rounded-3xl p-5 shadow-sm space-y-6">
         <div>
-          <h3 class="text-sm font-bold text-zinc-900 uppercase mb-3" id="titulo-tabla-operaciones-admin">Operaciones del Periodo</h3>
+          <div class="flex items-center justify-between gap-3 mb-3">
+            <h3 class="text-sm font-bold text-zinc-900 uppercase" id="titulo-tabla-operaciones-admin">Operaciones del Periodo</h3>
+            <input id="buscador-operaciones-periodo-admin" type="search" placeholder="Buscar operación..." class="w-56 rounded-xl border border-zinc-200 bg-white px-3 py-2 text-[11px] outline-none focus:border-red-500">
+          </div>
           <div class="overflow-x-auto max-h-[280px] overflow-y-auto">
             <table class="w-full text-left text-xs">
               <thead class="text-zinc-400 uppercase border-b">
@@ -302,7 +305,10 @@ function cargarPantallaEstadisticas() {
         </div>
 
         <div>
-          <h3 class="text-sm font-bold text-zinc-900 uppercase mb-3">Ventas del Mes</h3>
+          <div class="flex items-center justify-between gap-3 mb-3">
+            <h3 class="text-sm font-bold text-zinc-900 uppercase">Ventas del Mes</h3>
+            <input id="buscador-ventas-mes-admin" type="search" placeholder="Buscar venta del mes..." class="w-56 rounded-xl border border-zinc-200 bg-white px-3 py-2 text-[11px] outline-none focus:border-red-500">
+          </div>
           <div class="overflow-x-auto max-h-[280px] overflow-y-auto">
             <table class="w-full text-left text-xs">
               <thead class="text-zinc-400 uppercase border-b">
@@ -347,6 +353,9 @@ function cargarPantallaEstadisticas() {
   configurarSlicer('slicer-semana', 'semana');
   configurarSlicer('slicer-mes', 'mes');
   configurarSlicer('slicer-anio', 'anio');
+
+  document.getElementById('buscador-operaciones-periodo-admin')?.addEventListener('input', procesarGraficosSlicers);
+  document.getElementById('buscador-ventas-mes-admin')?.addEventListener('input', procesarGraficosSlicers);
 
   // Set default active slicer
   setActiveSlicer(filtroTemporalActual);
@@ -424,12 +433,18 @@ function procesarGraficosSlicers() {
   }, 0);
   if (kpiCuentas) kpiCuentas.textContent = montoPendienteTotal.toLocaleString('es-MX', { style: 'currency', currency: 'MXN' });
 
+  const terminoOperaciones = (document.getElementById('buscador-operaciones-periodo-admin')?.value || '').trim().toLowerCase();
+  const operacionesFiltradas = ventasFiltradas.filter((venta) => {
+    const textoBusqueda = `${venta.concepto || ''} ${venta.tipo || ''} ${venta.metodoPago || venta.metodo || ''}`.toLowerCase();
+    return !terminoOperaciones || textoBusqueda.includes(terminoOperaciones);
+  });
+
   const tbodyAdmin = document.getElementById('tabla-dashboard-ventas-admin');
   if (tbodyAdmin) {
-    if (ventasFiltradas.length === 0) {
-      tbodyAdmin.innerHTML = `<tr><td colspan="6" class="py-4 text-center text-zinc-400 italic">No hay transacciones registradas en este periodo.</td></tr>`;
+    if (operacionesFiltradas.length === 0) {
+      tbodyAdmin.innerHTML = `<tr><td colspan="6" class="py-4 text-center text-zinc-400 italic">${terminoOperaciones ? 'Sin resultados para esta búsqueda.' : 'No hay transacciones registradas en este periodo.'}</td></tr>`;
     } else {
-      tbodyAdmin.innerHTML = ventasFiltradas
+      tbodyAdmin.innerHTML = operacionesFiltradas
         .map((venta) => `
           <tr class="border-b hover:bg-zinc-50 text-[11px] transition-colors">
             <td class="py-2.5 text-zinc-500 font-mono">${venta.fecha.toLocaleString([], { dateStyle: 'short', timeStyle: 'short' })}</td>
@@ -455,12 +470,17 @@ function procesarGraficosSlicers() {
   const ventasDelMes = ventasCacheGlobalAdmin.filter((venta) => {
     return venta.fecha && venta.fecha.getMonth() === ahora.getMonth() && venta.fecha.getFullYear() === ahora.getFullYear();
   });
+  const terminoVentasMes = (document.getElementById('buscador-ventas-mes-admin')?.value || '').trim().toLowerCase();
+  const ventasMesFiltradas = ventasDelMes.filter((venta) => {
+    const textoBusqueda = `${venta.concepto || ''} ${venta.tipo || ''} ${venta.metodoPago || venta.metodo || ''}`.toLowerCase();
+    return !terminoVentasMes || textoBusqueda.includes(terminoVentasMes);
+  });
   const tbodyMes = document.getElementById('tabla-ventas-mes-admin');
   if (tbodyMes) {
-    if (ventasDelMes.length === 0) {
-      tbodyMes.innerHTML = `<tr><td colspan="6" class="py-4 text-center text-zinc-400 italic">No hay ventas del mes registradas.</td></tr>`;
+    if (ventasMesFiltradas.length === 0) {
+      tbodyMes.innerHTML = `<tr><td colspan="6" class="py-4 text-center text-zinc-400 italic">${terminoVentasMes ? 'Sin resultados para esta búsqueda.' : 'No hay ventas del mes registradas.'}</td></tr>`;
     } else {
-      tbodyMes.innerHTML = ventasDelMes
+      tbodyMes.innerHTML = ventasMesFiltradas
         .map((venta) => `
           <tr class="border-b hover:bg-zinc-50 text-[11px] transition-colors">
             <td class="py-2.5 text-zinc-500 font-mono">${venta.fecha.toLocaleString([], { dateStyle: 'short', timeStyle: 'short' })}</td>
@@ -597,6 +617,7 @@ function cargarPantallaRoles() {
         <div class="bg-white border rounded-3xl p-4 shadow-sm overflow-x-auto">
           <div class="flex items-center justify-between mb-4">
             <h3 class="text-sm font-bold uppercase text-zinc-900">Precios de Servicios</h3>
+            <input id="buscador-servicios-admin" type="search" placeholder="Buscar servicio..." class="w-48 rounded-xl border border-zinc-200 bg-white px-3 py-2 text-[11px] outline-none focus:border-red-500">
           </div>
           <table class="w-full text-left text-xs">
             <thead>
@@ -609,6 +630,7 @@ function cargarPantallaRoles() {
         <div class="bg-white border rounded-3xl p-4 shadow-sm overflow-x-auto">
           <div class="flex items-center justify-between mb-4">
             <h3 class="text-sm font-bold uppercase text-zinc-900">Inventario de Productos</h3>
+            <input id="buscador-productos-admin" type="search" placeholder="Buscar producto..." class="w-48 rounded-xl border border-zinc-200 bg-white px-3 py-2 text-[11px] outline-none focus:border-red-500">
           </div>
           <table class="w-full text-left text-xs">
             <thead>
@@ -631,6 +653,9 @@ function cargarPantallaRoles() {
     };
   }
 
+  document.getElementById('buscador-servicios-admin')?.addEventListener('input', renderServiciosAdmin);
+  document.getElementById('buscador-productos-admin')?.addEventListener('input', renderProductosCatalogoAdmin);
+
   renderServiciosAdmin();
   renderProductosCatalogoAdmin();
 }
@@ -646,7 +671,18 @@ function renderServiciosAdmin() {
     { id: 'caminadora', label: 'Caminadora' }
   ];
 
-  tabla.innerHTML = servicios
+  const termino = (document.getElementById('buscador-servicios-admin')?.value || '').trim().toLowerCase();
+  const serviciosFiltrados = servicios.filter((servicio) => {
+    const textoBusqueda = `${servicio.label} ${servicio.id}`.toLowerCase();
+    return !termino || textoBusqueda.includes(termino);
+  });
+
+  if (serviciosFiltrados.length === 0) {
+    tabla.innerHTML = `<tr><td colspan="4" class="py-4 text-center text-zinc-400 italic">Sin resultados para esta búsqueda.</td></tr>`;
+    return;
+  }
+
+  tabla.innerHTML = serviciosFiltrados
     .map((servicio) => {
       const showIcon = servicio.id === 'visita' || servicio.id === 'caminadora';
       const iconVal = preciosServiciosLocal[`${servicio.id}Icono`] || '';
@@ -693,16 +729,26 @@ function renderProductosCatalogoAdmin() {
   if (!tabla) return;
 
   const productosFisicos = productosVentaRapidaAdmin.filter((p) => p.tipo !== 'servicio');
-  if (productosFisicos.length === 0) {
-    tabla.innerHTML = `<tr><td colspan="5" class="py-4 text-center text-zinc-400">No hay productos físicos registrados.</td></tr>`;
+  const termino = (document.getElementById('buscador-productos-admin')?.value || '').trim().toLowerCase();
+  const productosFiltrados = productosFisicos.filter((p) => {
+    const textoBusqueda = `${p.nombre || ''} ${p.tipo || ''}`.toLowerCase();
+    return !termino || textoBusqueda.includes(termino);
+  });
+
+  if (productosFiltrados.length === 0) {
+    tabla.innerHTML = `<tr><td colspan="5" class="py-4 text-center text-zinc-400 italic">${termino ? 'Sin resultados para esta búsqueda.' : 'No hay productos físicos registrados.'}</td></tr>`;
     return;
   }
 
-  tabla.innerHTML = productosFisicos
+  tabla.innerHTML = productosFiltrados
     .map((p) => `
       <tr class="border-b hover:bg-zinc-50">
         <td class="py-3 font-bold text-zinc-800"><span class="truncate">${p.nombre}</span></td>
-        <td class="py-3 text-center"><input type="number" value="${p.precio}" data-precio-id="${p.id}" class="w-20 border rounded-lg p-1 text-center font-bold bg-zinc-50 text-xs" /></td>
+        <td class="py-3 text-center">
+          ${p.esSubmenu
+            ? '<span class="text-[10px] text-zinc-500 italic">El precio puede variar*</span>'
+            : `<input type="number" value="${p.precio}" data-precio-id="${p.id}" class="w-20 border rounded-lg p-1 text-center font-bold bg-zinc-50 text-xs" />`}
+        </td>
         <td class="py-3 text-center"><input type="number" value="${p.stock ?? 0}" data-stock-id="${p.id}" class="w-16 border rounded-lg p-1 text-center font-bold bg-zinc-50 text-xs" /></td>
         <td class="py-3 text-center">
           <select data-icon-id="${p.id}" class="w-12 text-lg bg-transparent border-none outline-none p-0">

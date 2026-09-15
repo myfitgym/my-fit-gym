@@ -264,7 +264,10 @@ function cargarPantallaUnificada() {
         </div>
 
         <div class="p-5 bg-white border border-zinc-200 rounded-3xl space-y-3 shadow-sm">
-          <h3 class="font-black text-xs tracking-wider text-zinc-700 uppercase">Ventas del Día</h3>
+          <div class="flex items-center justify-between gap-3">
+            <h3 class="font-black text-xs tracking-wider text-zinc-700 uppercase">Ventas del Día</h3>
+            <input id="buscador-ventas-hoy" type="search" placeholder="Buscar venta..." class="w-56 rounded-xl border border-zinc-200 bg-white px-3 py-2 text-[11px] outline-none focus:border-red-500">
+          </div>
           <div class="overflow-x-auto max-h-[350px] overflow-y-auto">
             <table class="w-full text-left text-xs">
               <thead>
@@ -322,6 +325,53 @@ function cargarPantallaUnificada() {
 
   renderizarBotonesPOS();
   document.getElementById('buscador-productos-pos')?.addEventListener('input', renderizarBotonesPOS);
+  document.getElementById('buscador-ventas-hoy')?.addEventListener('input', () => {
+    const tabla = document.getElementById('historial-ventas-hoy-tabla');
+    const registros = window.__ventasHoyCache || [];
+    if (!tabla || registros.length === 0) return;
+    const termino = document.getElementById('buscador-ventas-hoy')?.value.trim().toLowerCase() || '';
+    const registrosFiltrados = registros.filter((venta) => {
+      const textoBase = `${venta.concepto || ''} ${venta.metodoPago || venta.metodo || ''} ${venta.tipo || ''}`.toLowerCase();
+      return !termino || textoBase.includes(termino);
+    });
+
+    if (registrosFiltrados.length === 0) {
+      tabla.innerHTML = `<tr><td colspan="5" class="py-3 text-center text-zinc-400 italic">Sin resultados para esta búsqueda.</td></tr>`;
+      return;
+    }
+
+    tabla.innerHTML = registrosFiltrados.map(v => `
+      <tr class="border-b hover:bg-zinc-50">
+        <td class="py-2.5 font-mono text-[11px] text-zinc-500">${v.fecha.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</td>
+        <td class="py-2.5 font-bold text-zinc-800 truncate max-w-[280px]">${v.concepto || 'Venta Express'}</td>
+        <td class="py-2.5 text-center"><span class="px-2 py-1 rounded font-bold text-[9px] uppercase ${(() => { const metodo = String(v.metodoPago || v.metodo || 'EFECTIVO').toUpperCase(); return metodo === 'TARJETA' ? 'bg-blue-100 text-blue-700' : metodo === 'MIXTO' ? 'bg-purple-100 text-purple-700' : metodo === 'ABONO' ? 'bg-amber-100 text-amber-700' : 'bg-zinc-100 text-zinc-700'; })()}">${v.metodoPago || v.metodo || 'EFECTIVO'}</span></td>
+        <td class="py-2.5 text-right font-black text-zinc-900">$${Number(v.monto).toFixed(2)}</td>
+        <td class="py-2.5 text-right"><button type="button" data-id="${v.id}" class="btn-cancelar-historial px-3 py-1 rounded-xl bg-red-50 text-red-700 hover:bg-red-100 text-xs font-bold">Eliminar</button></td>
+      </tr>
+    `).join('');
+
+    tabla.querySelectorAll('.btn-cancelar-historial').forEach(btn => {
+      btn.onclick = async () => {
+        const ventaId = btn.getAttribute('data-id');
+        if (!(await mostrarConfirmacion("¿Deseas anular esta venta? Esto restablecerá el inventario si aplica."))) return;
+        try {
+          const ventaSnap = await getDoc(doc(db, "ventas", ventaId));
+          if (ventaSnap.exists() && ventaSnap.data().productosArr) {
+            for (const p of ventaSnap.data().productosArr) {
+              const prodRef = doc(db, "productos", p.id);
+              const pSnap = await getDoc(prodRef);
+              if (pSnap.exists() && pSnap.data().tipo !== 'servicio') {
+                await updateDoc(prodRef, { stock: Number(pSnap.data().stock || 0) + Number(p.cantidad) });
+              }
+            }
+          }
+          await deleteDoc(doc(db, "ventas", ventaId));
+          await marcarActividadDB();
+          mostrarSnackbarMensaje('Venta cancelada e inventario reajustado', 'info', 3000);
+        } catch (e) { console.error(e); }
+      };
+    });
+  });
   renderizarCarrito();
   configurarEventosPago();
 
@@ -357,15 +407,20 @@ function cargarPantallaUnificada() {
       txtGanancias.textContent = `$${totalHoy.toFixed(2)}`;
     }
 
+    window.__ventasHoyCache = registros.slice().sort((a,b) => b.fecha - a.fecha);
     const tabla = document.getElementById('historial-ventas-hoy-tabla'); if (!tabla) return;
-    registros.sort((a,b) => b.fecha - a.fecha);
+    const termino = (document.getElementById('buscador-ventas-hoy')?.value || '').trim().toLowerCase();
+    const registrosFiltrados = window.__ventasHoyCache.filter((venta) => {
+      const textoBase = `${venta.concepto || ''} ${venta.metodoPago || venta.metodo || ''} ${venta.tipo || ''}`.toLowerCase();
+      return !termino || textoBase.includes(termino);
+    });
 
-    if (registros.length === 0) {
-      tabla.innerHTML = `<tr><td colspan="5" class="py-3 text-center text-zinc-400 italic">No hay ventas registradas hoy.</td></tr>`;
+    if (registrosFiltrados.length === 0) {
+      tabla.innerHTML = `<tr><td colspan="5" class="py-3 text-center text-zinc-400 italic">${termino ? 'Sin resultados para esta búsqueda.' : 'No hay ventas registradas hoy.'}</td></tr>`;
       return;
     }
 
-    tabla.innerHTML = registros.map(v => `
+    tabla.innerHTML = registrosFiltrados.map(v => `
       <tr class="border-b hover:bg-zinc-50">
         <td class="py-2.5 font-mono text-[11px] text-zinc-500">${v.fecha.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</td>
         <td class="py-2.5 font-bold text-zinc-800 truncate max-w-[280px]">${v.concepto || 'Venta Express'}</td>
@@ -531,18 +586,51 @@ function abrirModalVariantes(producto) {
   modal.querySelectorAll('[data-variante-index]').forEach((button) => {
     button.onclick = () => {
       const variante = variantes[Number(button.dataset.varianteIndex)];
+      const nombreVariante = String(variante.nombre || '').trim();
       agregarAlCarrito({
         ...producto,
         ...variante,
-        id: `${producto.id}::${variante.nombre}`,
+        id: `${producto.id}::${nombreVariante}`,
         productoId: producto.id,
-        nombre: `${producto.nombre} - ${variante.nombre}`,
+        variante: nombreVariante,
+        nombre: `${producto.nombre} - ${nombreVariante}`,
         precio: Number(variante.precio ?? producto.precio),
         stock: Number(variante.stock ?? producto.stock ?? 0)
       });
       cerrar();
     };
   });
+}
+
+async function decrementarStockProducto(item) {
+  const productoId = item.productoId || item.id;
+  const productoRef = doc(db, 'productos', productoId);
+  const productoSnap = await getDoc(productoRef);
+  if (!productoSnap.exists()) return;
+
+  const productoData = productoSnap.data();
+  if (!productoData || productoData.tipo === 'servicio') return;
+
+  if (productoData.esSubmenu && Array.isArray(productoData.variantes)) {
+    const varianteNombre = String(item.variante || (String(item.nombre || '').includes(' - ') ? String(item.nombre).split(' - ').slice(-1)[0] : '')).trim();
+    const nuevasVariantes = productoData.variantes.map((variante) => {
+      const nombre = typeof variante === 'string' ? variante : (variante?.nombre || '');
+      if (nombre !== varianteNombre) return variante;
+      const stockActual = Number(typeof variante === 'string' ? 0 : (variante?.stock ?? 0));
+      const nuevoStock = Math.max(0, stockActual - Number(item.cantidad || 1));
+      if (typeof variante === 'string') return { nombre, stock: nuevoStock, precio: Number(productoData.precio || 0) };
+      return { ...variante, stock: nuevoStock };
+    });
+    const stockTotal = nuevasVariantes.reduce((total, variante) => {
+      const stock = typeof variante === 'string' ? 0 : Number(variante?.stock ?? 0);
+      return total + stock;
+    }, 0);
+    await updateDoc(productoRef, { variantes: nuevasVariantes, stock: stockTotal });
+    return;
+  }
+
+  const stockActual = Number(productoData.stock || 0);
+  await updateDoc(productoRef, { stock: Math.max(0, stockActual - Number(item.cantidad || 1)) });
 }
 
 function agregarAlCarrito(producto) {
@@ -728,12 +816,7 @@ function configurarEventosPago() {
           await addDoc(collection(db, 'caja'), { tipo: 'abono', ventaId: ventaRef.id, monto: Number(abonoInicial), descripcion: `Abono inicial ${cliente || ''}`, fecha: new Date().toISOString() });
           // Descontar stock
           for (const item of carrito) {
-            const prodRef = doc(db, 'productos', item.productoId || item.id);
-            const snapshot = await getDoc(prodRef);
-            if (snapshot.exists() && snapshot.data().tipo !== 'servicio') {
-              const stockActual = Number(snapshot.data().stock || 0);
-              await updateDoc(prodRef, { stock: Math.max(0, stockActual - Number(item.cantidad)) });
-            }
+            await decrementarStockProducto(item);
           }
           await marcarActividadDB();
           mostrarSnackbarMensaje('Venta registrada a plazos. Abono inicial registrado en caja.', 'success', 3000);
@@ -827,12 +910,7 @@ function configurarEventosPago() {
       await addDoc(collection(db, "ventas"), ventaData);
 
       for (const item of carrito) {
-        const prodRef = doc(db, "productos", item.productoId || item.id);
-        const snapshot = await getDoc(prodRef);
-        if (snapshot.exists() && snapshot.data().tipo !== 'servicio') {
-          const stockActual = Number(snapshot.data().stock || 0);
-          await updateDoc(prodRef, { stock: Math.max(0, stockActual - Number(item.cantidad)) });
-        }
+        await decrementarStockProducto(item);
       }
 
       await marcarActividadDB();
