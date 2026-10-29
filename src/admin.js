@@ -1,5 +1,8 @@
 import { db } from './firebase.js';
-import { collection, onSnapshot, doc, setDoc, deleteDoc, getDoc, updateDoc, addDoc, writeBatch } from 'firebase/firestore';
+import { collection, onSnapshot, doc, setDoc, deleteDoc, getDoc, updateDoc, addDoc, writeBatch, deleteField } from 'firebase/firestore';
+import { escaparHtml, miniaturaImagenHTML, subirImagenProducto } from './product-images.js';
+import * as OTPAuth from 'otpauth';
+import QRCode from 'qrcode';
 
 const contenedorPantallas = document.getElementById('contenedor-pantallas');
 const btnEstadisticas = document.getElementById('btn-estadisticas');
@@ -80,6 +83,179 @@ async function confirmarAdmin(mensaje, titulo = 'Confirmar acción') {
 async function solicitarTextoAdmin(mensaje, titulo = 'Ingresa la información') {
   const resultado = await abrirModalAdmin({ mensaje, titulo, tipoEntrada: true });
   return typeof resultado === 'string' ? resultado : null;
+}
+
+function normalizarRespuestaSeguridad(value) {
+  return String(value ?? '')
+    .normalize('NFD')
+    .replace(/\p{Diacritic}/gu, '')
+    .trim()
+    .replace(/\s+/g, ' ')
+    .toLocaleLowerCase('es');
+}
+
+function obtenerPreguntaSeguridad(preguntaId) {
+  return {
+    cumpleanios: '¿Cuál es tu fecha de nacimiento?',
+    mascota: '¿Cuál fue el nombre de tu primera mascota?',
+    escuela: '¿Cuál es el nombre de tu escuela primaria?',
+    ciudad: '¿En qué ciudad naciste?'
+  }[preguntaId] || '¿Cuál es tu fecha de nacimiento?';
+}
+
+function crearTOTP(secret) {
+  return new OTPAuth.TOTP({
+    issuer: 'My Fit Gym Rodeo',
+    label: 'Administrador',
+    algorithm: 'SHA1',
+    digits: 6,
+    period: 30,
+    secret
+  });
+}
+
+function validarCodigoTOTP(secret, token) {
+  if (!secret || !/^\d{6}$/.test(String(token || '').trim())) return false;
+  return crearTOTP(secret).validate({ token: String(token).trim(), window: 1 }) !== null;
+}
+
+function solicitarDatoRecuperacion({ titulo, pregunta, tipo = 'text', placeholder = '', autocomplete = 'off', validar = null, validarEnEntrada = false }) {
+  return new Promise((resolve) => {
+    const overlay = document.createElement('div');
+    overlay.className = 'fixed inset-0 z-[70] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4';
+    overlay.innerHTML = `
+      <form class="w-full max-w-sm space-y-4 rounded-3xl bg-white p-6 shadow-2xl" role="dialog" aria-modal="true">
+        <div>
+          <h3 class="text-lg font-black text-zinc-900">${escaparHtml(titulo)}</h3>
+          <p class="mt-1 text-sm text-zinc-600">${escaparHtml(pregunta)}</p>
+        </div>
+        <input data-recovery-input type="${tipo}" ${tipo === 'date' ? '' : `placeholder="${escaparHtml(placeholder)}"`} autocomplete="${autocomplete}" ${tipo === 'text' ? 'autocapitalize="off"' : ''} class="w-full rounded-xl border border-zinc-200 px-3 py-2 text-sm outline-none focus:border-red-500">
+        <p data-recovery-error class="hidden text-xs font-semibold text-red-600"></p>
+        <div class="flex gap-3">
+          <button type="button" data-recovery-cancel class="flex-1 rounded-xl bg-zinc-200 px-4 py-2.5 text-sm font-bold text-zinc-800">Cancelar</button>
+          <button type="submit" class="flex-1 rounded-xl bg-[#D32F2F] px-4 py-2.5 text-sm font-bold text-white">Continuar</button>
+        </div>
+      </form>`;
+    document.body.appendChild(overlay);
+    const form = overlay.querySelector('form');
+    const input = overlay.querySelector('[data-recovery-input]');
+    const error = overlay.querySelector('[data-recovery-error]');
+    const submit = form.querySelector('[type="submit"]');
+    const close = (value) => {
+      document.removeEventListener('keydown', onKeydown);
+      overlay.remove();
+      resolve(value);
+    };
+    const onKeydown = (event) => {
+      if (event.key === 'Escape') close(null);
+    };
+    input.focus();
+    if (validarEnEntrada) {
+      input.inputMode = 'numeric';
+      input.maxLength = 6;
+      input.pattern = '[0-9]{6}';
+      input.addEventListener('input', () => {
+        const code = input.value.trim();
+        if (!code) {
+          error.textContent = '';
+          error.classList.add('hidden');
+          submit.disabled = true;
+          return;
+        }
+        const esValido = validar(code);
+        error.textContent = esValido ? 'Código válido.' : 'Escribe el código de 6 dígitos actual.';
+        error.classList.toggle('hidden', false);
+        error.classList.toggle('text-emerald-600', esValido);
+        error.classList.toggle('text-red-600', !esValido);
+        submit.disabled = !esValido;
+      });
+      submit.disabled = true;
+    }
+    overlay.querySelector('[data-recovery-cancel]').onclick = () => close(null);
+    overlay.addEventListener('click', (event) => {
+      if (event.target === overlay) close(null);
+    });
+    form.onsubmit = (event) => {
+      event.preventDefault();
+      const value = input.value;
+      if (!value.trim()) {
+        error.textContent = 'Completa este campo.';
+        error.classList.remove('hidden');
+        return;
+      }
+      if (validar && !validar(value)) {
+        error.textContent = 'El código de verificación no es válido. Intenta de nuevo.';
+        error.classList.remove('hidden');
+        input.select();
+        return;
+      }
+      close(value);
+    };
+    document.addEventListener('keydown', onKeydown);
+  });
+}
+
+async function solicitarNuevaContrasena() {
+  return new Promise((resolve) => {
+    const overlay = document.createElement('div');
+    overlay.className = 'fixed inset-0 z-[70] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4';
+    overlay.innerHTML = `
+      <form class="w-full max-w-sm space-y-4 rounded-3xl bg-white p-6 shadow-2xl" role="dialog" aria-modal="true">
+        <div>
+          <h3 class="text-lg font-black text-zinc-900">Actualizar contraseña</h3>
+          <p class="mt-1 text-sm text-zinc-600">Ingresa y confirma tu nueva contraseña.</p>
+        </div>
+        <input data-new-password type="password" minlength="4" required autocomplete="new-password" placeholder="Nueva contraseña" class="w-full rounded-xl border border-zinc-200 px-3 py-2 text-sm outline-none focus:border-red-500">
+        <input data-confirm-password type="password" minlength="4" required autocomplete="new-password" placeholder="Confirmar contraseña" class="w-full rounded-xl border border-zinc-200 px-3 py-2 text-sm outline-none focus:border-red-500">
+        <p data-password-error class="hidden text-xs font-semibold text-red-600"></p>
+        <div class="flex gap-3">
+          <button type="button" data-password-cancel class="flex-1 rounded-xl bg-zinc-200 px-4 py-2.5 text-sm font-bold text-zinc-800">Cancelar</button>
+          <button type="submit" class="flex-1 rounded-xl bg-[#D32F2F] px-4 py-2.5 text-sm font-bold text-white">Guardar contraseña</button>
+        </div>
+      </form>`;
+    document.body.appendChild(overlay);
+    const form = overlay.querySelector('form');
+    const password = overlay.querySelector('[data-new-password]');
+    const confirmation = overlay.querySelector('[data-confirm-password]');
+    const error = overlay.querySelector('[data-password-error]');
+    const close = (value) => {
+      document.removeEventListener('keydown', onKeydown);
+      overlay.remove();
+      resolve(value);
+    };
+    const onKeydown = (event) => {
+      if (event.key === 'Escape') close(null);
+    };
+    password.focus();
+    overlay.querySelector('[data-password-cancel]').onclick = () => close(null);
+    overlay.addEventListener('click', (event) => {
+      if (event.target === overlay) close(null);
+    });
+    form.onsubmit = (event) => {
+      event.preventDefault();
+      if (password.value.length < 4) {
+        error.textContent = 'La contraseña debe tener al menos 4 caracteres.';
+        error.classList.remove('hidden');
+        return;
+      }
+      if (password.value !== confirmation.value) {
+        error.textContent = 'Las contraseñas no coinciden.';
+        error.classList.remove('hidden');
+        confirmation.focus();
+        return;
+      }
+      close(password.value);
+    };
+    document.addEventListener('keydown', onKeydown);
+  });
+}
+
+async function actualizarContrasenaRecuperada(password) {
+  await setDoc(refCredenciales, {
+    password,
+    ultimaActualizacion: new Date().toISOString()
+  }, { merge: true });
+  datosSeguridadLocal = { ...datosSeguridadLocal, password };
 }
 
 onSnapshot(collection(db, 'productos'), (snapshot) => {
@@ -211,13 +387,51 @@ function inicializarModalAccesoAdmin() {
     if (event.key === 'Escape' && !modalAccesoAdmin.classList.contains('hidden')) cerrarModalAccesoAdmin();
   });
   modalAdminForgot.onclick = async () => {
-    const nacimientoMaestro = datosSeguridadLocal?.nacimiento || '2026-01-01';
-    const valor = await solicitarTextoAdmin('Ingresa tu fecha de nacimiento (AAAA-MM-DD) para recuperar la clave.', 'Recuperar contraseña');
-    if (valor === nacimientoMaestro) {
-      mostrarToastAdmin(`Tu contraseña maestra es: ${datosSeguridadLocal?.password || 'Admin123'}`, 'info');
+    try {
+      const credentialSnapshot = await getDoc(refCredenciales);
+      if (credentialSnapshot.exists()) datosSeguridadLocal = credentialSnapshot.data();
+      const preguntaId = datosSeguridadLocal?.seguridadPreguntaId || 'cumpleanios';
+      const pregunta = obtenerPreguntaSeguridad(preguntaId);
+      const respuesta = await solicitarDatoRecuperacion({
+        titulo: 'Recuperar contraseña',
+        pregunta,
+        tipo: preguntaId === 'cumpleanios' ? 'date' : 'text',
+        placeholder: 'Tu respuesta',
+        autocomplete: 'off'
+      });
+      if (respuesta === null) return;
+
+      const respuestaGuardada = datosSeguridadLocal?.seguridadRespuesta
+        || datosSeguridadLocal?.nacimiento
+        || '2026-01-01';
+      if (normalizarRespuestaSeguridad(respuesta) !== normalizarRespuestaSeguridad(respuestaGuardada)) {
+        modalAdminError.textContent = 'La respuesta de seguridad es incorrecta.';
+        modalAdminError.classList.remove('hidden');
+        return;
+      }
+
+      if (datosSeguridadLocal?.autenticacion2FA === true) {
+        const codigo = await solicitarDatoRecuperacion({
+          titulo: 'Verificación en dos pasos',
+          pregunta: 'Ingresa el código actual de 6 dígitos de tu aplicación Authenticator.',
+          tipo: 'text',
+          placeholder: '000000',
+          autocomplete: 'one-time-code',
+          validar: (value) => validarCodigoTOTP(datosSeguridadLocal?.totpSecret, value),
+          validarEnEntrada: true
+        });
+        if (codigo === null) return;
+      }
+
+      const nuevaContrasena = await solicitarNuevaContrasena();
+      if (!nuevaContrasena) return;
+      await actualizarContrasenaRecuperada(nuevaContrasena);
       modalAdminError.classList.add('hidden');
-    } else {
-      modalAdminError.textContent = 'Fecha de nacimiento incorrecta.';
+      modalAdminInput.value = '';
+      mostrarToastAdmin('Contraseña actualizada. Ya puedes iniciar sesión.', 'success');
+    } catch (error) {
+      console.error('Error en recuperación de contraseña:', error);
+      modalAdminError.textContent = MENSAJE_ERROR_ADMIN;
       modalAdminError.classList.remove('hidden');
     }
   };
@@ -566,25 +780,9 @@ function cargarPantallaRoles() {
         <div class="grid grid-cols-1 sm:grid-cols-4 gap-3">
             <div class="sm:col-span-2"><label class="block text-[10px] font-bold text-zinc-400 uppercase mb-1">Nombre</label><input type="text" id="add-admin-nombre" class="w-full px-3 py-2 bg-zinc-50 border rounded-xl text-xs outline-none" /></div>
             <div>
-              <label class="block text-[10px] font-bold text-zinc-400 uppercase mb-1">Icono</label>
-              <select id="add-admin-icono" class="w-full px-3 py-2 bg-zinc-50 border rounded-xl text-xs outline-none">
-                <option value="🥤">🥤 Batido</option>
-                <option value="🚰">🚰 Botella</option>
-                <option value="🍫">🍫 Snack</option>
-                <option value="🍫">🍫 Barra</option>
-                <option value="🍏">🍏 Snack Saludable</option>
-                <option value="💊">💊 Creatina</option>
-                <option value="🥛">🥛 Proteína</option>
-                <option value="⚡">⚡ Preentreno</option>
-                <option value="👕">👕 Camiseta</option>
-                <option value="👖">👖 Pantalón</option>
-                <option value="👜">👜 Bolsa</option>
-                <option value="🩳">🩳 Short</option>
-                <option value="🧢">🧢 Gorra</option>
-                <option value="🏋️">🏋️ Gym</option>
-                <option value="🛍️">🛍️ Merch</option>
-                <option value="🎟️">🎟️ Ticket Dorado</option>
-              </select>
+              <label class="block text-[10px] font-bold text-zinc-400 uppercase mb-1">Fotografía</label>
+              <input type="file" id="add-admin-imagen" accept="image/*" capture="environment" class="w-full px-3 py-2 bg-zinc-50 border rounded-xl text-xs outline-none" />
+              <div id="preview-add-admin-imagen" class="mt-2"></div>
             </div>
             <div id="wrapper-add-precio"><label class="block text-[10px] font-bold text-zinc-400 uppercase mb-1">Precio</label><input type="number" id="add-admin-precio" min="0" class="w-full px-3 py-2 bg-zinc-50 border rounded-xl text-xs outline-none" /></div>
             <div>
@@ -621,7 +819,7 @@ function cargarPantallaRoles() {
           </div>
           <table class="w-full text-left text-xs">
             <thead>
-              <tr class="text-zinc-400 border-b"><th class="pb-2">Servicio</th><th class="pb-2">Precio</th><th class="pb-2">Emoji</th><th class="pb-2 text-right">Acción</th></tr>
+              <tr class="text-zinc-400 border-b"><th class="pb-2">Servicio</th><th class="pb-2">Precio</th><th class="pb-2">Foto</th><th class="pb-2 text-right">Acción</th></tr>
             </thead>
             <tbody id="tabla-servicios-admin"></tbody>
           </table>
@@ -634,7 +832,7 @@ function cargarPantallaRoles() {
           </div>
           <table class="w-full text-left text-xs">
             <thead>
-              <tr class="text-zinc-400 border-b"><th class="pb-2">Producto</th><th class="pb-2">Precio</th><th class="pb-2">Stock</th><th class="pb-2">Emoji</th><th class="pb-2 text-right">Acción</th></tr>
+              <tr class="text-zinc-400 border-b"><th class="pb-2">Producto</th><th class="pb-2">Precio</th><th class="pb-2">Stock</th><th class="pb-2">Foto</th><th class="pb-2 text-right">Acción</th></tr>
             </thead>
             <tbody id="tabla-productos-editables-admin"></tbody>
           </table>
@@ -684,34 +882,50 @@ function renderServiciosAdmin() {
 
   tabla.innerHTML = serviciosFiltrados
     .map((servicio) => {
-      const showIcon = servicio.id === 'visita' || servicio.id === 'caminadora';
-      const iconVal = preciosServiciosLocal[`${servicio.id}Icono`] || '';
+      const imageField = `${servicio.id}ImagenUrl`;
+      const preview = miniaturaImagenHTML(preciosServiciosLocal[imageField], 'h-10 w-10 rounded-full');
       return `
       <tr class="border-b hover:bg-zinc-50">
         <td class="py-3 font-bold text-zinc-800">${servicio.label}</td>
         <td class="py-3 text-center"><input type="number" data-precio-id="${servicio.id}" value="${preciosServiciosLocal[servicio.id] ?? 0}" class="w-32 border rounded-lg p-1 text-center font-bold bg-zinc-50 text-xs" /></td>
-        <td class="py-3 text-center">${showIcon ? `<select data-precio-id-icon="${servicio.id}" class="bg-transparent text-xl outline-none"><option value="">-</option><option value="🎫" ${iconVal==='🎫' ? 'selected' : ''}>🎫</option><option value="🎟️" ${iconVal==='🎟️' ? 'selected' : ''}>🎟️</option><option value="🏃" ${iconVal==='🏃' ? 'selected' : ''}>🏃</option></select>` : ''}</td>
+        <td class="py-3 text-center">
+          <div class="flex flex-col items-center gap-1">
+            <div data-servicio-preview="${servicio.id}">${preview}</div>
+            <input type="file" accept="image/*" capture="environment" data-servicio-imagen="${servicio.id}" class="w-36 text-[9px]" aria-label="Foto de ${servicio.label}">
+          </div>
+        </td>
         <td class="py-3 text-right"><button type="button" data-id="${servicio.id}" class="btn-servicio-save bg-zinc-900 text-white px-2.5 py-1 rounded-xl text-[11px] font-bold">Guardar</button></td>
       </tr>
     `;
     })
     .join('');
 
+  tabla.querySelectorAll('input[data-servicio-imagen]').forEach((input) => {
+    input.onchange = () => {
+      const file = input.files?.[0];
+      const preview = tabla.querySelector(`[data-servicio-preview="${input.dataset.servicioImagen}"]`);
+      if (file && preview) {
+        preview.innerHTML = `<img src="${URL.createObjectURL(file)}" alt="" class="h-10 w-10 rounded-full object-cover">`;
+      }
+    };
+  });
+
   tabla.querySelectorAll('.btn-servicio-save').forEach((btn) => {
     btn.onclick = async () => {
       const id = btn.getAttribute('data-id');
       const input = tabla.querySelector(`input[data-precio-id="${id}"]`);
-      const inputIcon = tabla.querySelector(`select[data-precio-id-icon="${id}"]`);
+      const inputImagen = tabla.querySelector(`input[data-servicio-imagen="${id}"]`);
       if (!id || !input) return;
       const precio = Number(input.value);
-      if (precio < 0) {
+      if (!Number.isFinite(precio) || precio < 0) {
         mostrarToastAdmin('Ingresa un precio válido.', 'error');
         return;
       }
 
       try {
         const payload = { [id]: precio };
-        if (inputIcon && inputIcon.value) payload[`${id}Icono`] = inputIcon.value;
+        const file = inputImagen?.files?.[0];
+        if (file) payload[`${id}ImagenUrl`] = await subirImagenProducto(file, `servicios/${id}`);
         await setDoc(refServiciosPrecios, payload, { merge: true });
         preciosServiciosLocal = { ...preciosServiciosLocal, ...payload };
         renderServiciosAdmin();
@@ -743,7 +957,7 @@ function renderProductosCatalogoAdmin() {
   tabla.innerHTML = productosFiltrados
     .map((p) => `
       <tr class="border-b hover:bg-zinc-50">
-        <td class="py-3 font-bold text-zinc-800"><span class="truncate">${p.nombre}</span></td>
+        <td class="py-3 font-bold text-zinc-800"><span class="truncate">${escaparHtml(p.nombre)}</span></td>
         <td class="py-3 text-center">
           ${p.esSubmenu
             ? '<span class="text-[10px] text-zinc-500 italic">El precio puede variar*</span>'
@@ -751,34 +965,31 @@ function renderProductosCatalogoAdmin() {
         </td>
         <td class="py-3 text-center"><input type="number" value="${p.stock ?? 0}" data-stock-id="${p.id}" class="w-16 border rounded-lg p-1 text-center font-bold bg-zinc-50 text-xs" /></td>
         <td class="py-3 text-center">
-          <select data-icon-id="${p.id}" class="w-12 text-lg bg-transparent border-none outline-none p-0">
-            <option value="🥤" ${p.icono === '🥤' ? 'selected' : ''}>🥤</option>
-            <option value="🚰" ${p.icono === '🚰' ? 'selected' : ''}>🚰</option>
-            <option value="🍫" ${p.icono === '🍫' ? 'selected' : ''}>🍫</option>
-            <option value="🍏" ${p.icono === '🍏' ? 'selected' : ''}>🍏</option>
-            <option value="💊" ${p.icono === '💊' ? 'selected' : ''}>💊</option>
-            <option value="🥛" ${p.icono === '🥛' ? 'selected' : ''}>🥛</option>
-            <option value="⚡" ${p.icono === '⚡' ? 'selected' : ''}>⚡</option>
-            <option value="👕" ${p.icono === '👕' ? 'selected' : ''}>👕</option>
-            <option value="👖" ${p.icono === '👖' ? 'selected' : ''}>👖</option>
-            <option value="👜" ${p.icono === '👜' ? 'selected' : ''}>👜</option>
-            <option value="🩳" ${p.icono === '🩳' ? 'selected' : ''}>🩳</option>
-            <option value="🧢" ${p.icono === '🧢' ? 'selected' : ''}>🧢</option>
-            <option value="🏋️" ${p.icono === '🏋️' ? 'selected' : ''}>🏋️</option>
-            <option value="🛍️" ${p.icono === '🛍️' ? 'selected' : ''}>🛍️</option>
-            <option value="🎟️" ${p.icono === '🎟️' ? 'selected' : ''}>🎟️</option>
-          </select>
+          <div class="flex flex-col items-center gap-1">
+            <div data-producto-preview="${escaparHtml(p.id)}">${miniaturaImagenHTML(p.imagenUrl, 'h-10 w-10 rounded-lg')}</div>
+            <input type="file" accept="image/*" capture="environment" data-imagen-id="${escaparHtml(p.id)}" class="w-32 text-[9px]" aria-label="Foto de ${escaparHtml(p.nombre)}">
+          </div>
         </td>
         <td class="py-3 text-right">
           <div class="inline-flex gap-1 justify-end flex-wrap justify-end">
             <button data-id="${p.id}" class="btn-admin-save-item bg-zinc-900 text-white px-2.5 py-1 rounded-xl text-[11px] font-bold">Guardar</button>
-            ${p.esSubmenu ? `<button data-submenu-edit="${p.id}" class="bg-amber-50 text-amber-700 px-2.5 py-1 rounded-xl text-[11px] font-bold">Variantes</button>` : ''}
+            ${p.esSubmenu ? `<button data-submenu-edit="${escaparHtml(p.id)}" class="bg-amber-50 text-amber-700 px-2.5 py-1 rounded-xl text-[11px] font-bold">Variantes</button>` : ''}
             <button data-id="${p.id}" class="btn-admin-delete-item bg-red-50 text-red-600 px-2.5 py-1 rounded-xl text-[11px]">Eliminar</button>
           </div>
         </td>
       </tr>
     `)
     .join('');
+
+  tabla.querySelectorAll('input[data-imagen-id]').forEach((input) => {
+    input.onchange = () => {
+      const file = input.files?.[0];
+      const preview = tabla.querySelector(`[data-producto-preview="${input.dataset.imagenId}"]`);
+      if (file && preview) {
+        preview.innerHTML = `<img src="${URL.createObjectURL(file)}" alt="" class="h-10 w-10 rounded-lg object-cover">`;
+      }
+    };
+  });
 
   tabla.querySelectorAll('[data-submenu-edit]').forEach((btn) => {
     btn.onclick = () => {
@@ -793,7 +1004,8 @@ function renderProductosCatalogoAdmin() {
       ? producto.variantes.map((variante) => ({
           nombre: variante?.nombre || '',
           precio: Number(variante?.precio ?? producto.precio ?? 0),
-          stock: Number(variante?.stock ?? 0)
+          stock: Number(variante?.stock ?? 0),
+          imagenUrl: variante?.imagenUrl || ''
         }))
       : [];
     const variantes = [...variantesIniciales];
@@ -806,7 +1018,7 @@ function renderProductosCatalogoAdmin() {
           <div class="mb-4 flex items-center justify-between">
             <div>
               <h3 class="text-lg font-black text-zinc-900">Editar variantes</h3>
-              <p class="text-xs text-zinc-500">${producto.nombre}</p>
+              <p class="text-xs text-zinc-500">${escaparHtml(producto.nombre)}</p>
             </div>
             <button type="button" data-submenu-close class="text-xl text-zinc-400">✕</button>
           </div>
@@ -826,13 +1038,31 @@ function renderProductosCatalogoAdmin() {
 
       const list = overlay.querySelector('#submenu-editor-list');
       list.innerHTML = variantes.map((variante, index) => `
-        <div class="grid grid-cols-[1.2fr_90px_90px_auto] gap-2 rounded-2xl border border-zinc-200 bg-zinc-50 p-2">
-          <input type="text" data-submenu-nombre="${index}" value="${variante.nombre}" placeholder="Nombre" class="w-full rounded-lg border border-zinc-200 bg-white px-2 py-1.5 text-xs outline-none focus:border-red-500" />
+        <div class="grid grid-cols-1 sm:grid-cols-[1.2fr_90px_90px_auto] gap-2 rounded-2xl border border-zinc-200 bg-zinc-50 p-2">
+          <input type="text" data-submenu-nombre="${index}" value="${escaparHtml(variante.nombre)}" placeholder="Nombre" class="w-full rounded-lg border border-zinc-200 bg-white px-2 py-1.5 text-xs outline-none focus:border-red-500" />
           <input type="number" data-submenu-precio="${index}" value="${Number(variante.precio || 0)}" min="0" step="0.01" placeholder="Precio" class="w-full rounded-lg border border-zinc-200 bg-white px-2 py-1.5 text-xs outline-none focus:border-red-500" />
           <input type="number" data-submenu-stock="${index}" value="${Number(variante.stock || 0)}" min="0" step="1" placeholder="Stock" class="w-full rounded-lg border border-zinc-200 bg-white px-2 py-1.5 text-xs outline-none focus:border-red-500" />
           <button type="button" data-submenu-remove="${index}" class="rounded-lg bg-red-50 px-2 py-1.5 text-[10px] font-bold text-red-600">Quitar</button>
+          <div class="col-span-full flex items-center gap-3">
+            <div data-submenu-preview="${index}">${miniaturaImagenHTML(variante.imagenUrl, 'h-12 w-12 rounded-lg')}</div>
+            <label class="text-[10px] font-bold text-zinc-600">Foto
+              <input type="file" data-submenu-image="${index}" accept="image/*" capture="environment" class="ml-2 max-w-48 text-[10px]">
+            </label>
+          </div>
         </div>
       `).join('');
+
+      overlay.querySelectorAll('[data-submenu-image]').forEach((input) => {
+        input.onchange = () => {
+          const file = input.files?.[0];
+          const index = Number(input.dataset.submenuImage);
+          const preview = overlay.querySelector(`[data-submenu-preview="${index}"]`);
+          if (file && preview) {
+            variantes[index].archivoImagen = file;
+            preview.innerHTML = `<img src="${URL.createObjectURL(file)}" alt="" class="h-12 w-12 rounded-lg object-cover">`;
+          }
+        };
+      });
 
       overlay.querySelectorAll('[data-submenu-remove]').forEach((button) => {
         button.onclick = () => {
@@ -855,25 +1085,33 @@ function renderProductosCatalogoAdmin() {
             const nombre = (overlay.querySelector(`[data-submenu-nombre="${index}"]`)?.value || '').trim();
             const precio = Number(overlay.querySelector(`[data-submenu-precio="${index}"]`)?.value || 0);
             const stock = Number(overlay.querySelector(`[data-submenu-stock="${index}"]`)?.value || 0);
-            return { nombre, precio, stock };
+            return { ...variante, nombre, precio, stock };
           })
           .filter((variante) => variante.nombre)
           .map((variante) => ({
             nombre: variante.nombre,
             precio: Number(variante.precio || 0),
-            stock: Number(variante.stock || 0)
+            stock: Number(variante.stock || 0),
+            imagenUrl: variante.imagenUrl,
+            archivoImagen: variante.archivoImagen
           }));
 
-        if (!datosValidos.length) {
-          mostrarToastAdmin('Agrega al menos una variante válida.', 'error');
+        if (!datosValidos.length || datosValidos.some((variante) => !variante.imagenUrl && !variante.archivoImagen)) {
+          mostrarToastAdmin('Agrega al menos una variante válida y su fotografía.', 'error');
           return;
         }
 
         try {
           const stockTotal = datosValidos.reduce((sum, variante) => sum + Number(variante.stock || 0), 0);
+          const variantesConImagen = await Promise.all(datosValidos.map(async ({ archivoImagen, ...variante }) => ({
+            ...variante,
+            imagenUrl: archivoImagen
+              ? await subirImagenProducto(archivoImagen, `productos/${producto.id}/variantes`)
+              : variante.imagenUrl
+          })));
           await updateDoc(doc(db, 'productos', producto.id), {
             esSubmenu: true,
-            variantes: datosValidos,
+            variantes: variantesConImagen,
             stock: stockTotal,
             precio: Number(datosValidos[0].precio || producto.precio || 0)
           });
@@ -907,6 +1145,14 @@ function renderProductosCatalogoAdmin() {
   const variantesWrapper = document.getElementById('wrapper-add-variantes');
   const variantesList = document.getElementById('lista-add-variantes');
   const variantes = [];
+  const imagenPrincipalInput = document.getElementById('add-admin-imagen');
+  imagenPrincipalInput?.addEventListener('change', () => {
+    const file = imagenPrincipalInput.files?.[0];
+    const preview = document.getElementById('preview-add-admin-imagen');
+    if (file && preview) {
+      preview.innerHTML = `<img src="${URL.createObjectURL(file)}" alt="Vista previa de la fotografía" class="h-20 w-20 rounded-xl object-cover">`;
+    }
+  });
   const guardarValoresVariantes = () => {
     if (!variantesList) return;
     variantes.forEach((variante, index) => {
@@ -916,18 +1162,36 @@ function renderProductosCatalogoAdmin() {
       variante.nombre = nombreInput?.value || '';
       variante.precio = precioInput?.value || '';
       variante.stock = stockInput?.value || '';
+      variante.imagenUrl = variante.imagenUrl || '';
     });
   };
   const renderVariantes = () => {
     if (!variantesList) return;
     variantesList.innerHTML = variantes.map((_, index) => `
-      <div class="grid grid-cols-[1fr_6rem_6rem_auto] gap-2 items-center">
-        <input type="text" data-variante-nombre="${index}" value="${variantes[index].nombre || ''}" placeholder="Ej. Fresa" class="w-full rounded-xl border border-zinc-200 bg-white px-2 py-1.5 text-xs">
+      <div class="grid grid-cols-1 sm:grid-cols-[1fr_6rem_6rem_auto] gap-2 items-center rounded-xl border border-zinc-200 bg-white p-2">
+        <input type="text" data-variante-nombre="${index}" value="${escaparHtml(variantes[index].nombre || '')}" placeholder="Ej. Fresa" class="w-full rounded-xl border border-zinc-200 bg-white px-2 py-1.5 text-xs">
         <input type="number" data-variante-precio="${index}" value="${variantes[index].precio || ''}" min="0" placeholder="Precio" class="w-full rounded-xl border border-zinc-200 bg-white px-2 py-1.5 text-xs">
         <input type="number" data-variante-stock="${index}" value="${variantes[index].stock || ''}" min="0" placeholder="Stock" class="w-full rounded-xl border border-zinc-200 bg-white px-2 py-1.5 text-xs">
         <button type="button" data-variante-delete="${index}" class="rounded-xl bg-red-50 px-2 py-1.5 text-[10px] font-bold text-red-600">Quitar</button>
+        <div class="col-span-full flex items-center gap-3">
+          <div data-variante-preview="${index}">${miniaturaImagenHTML(variantes[index].archivoImagen ? URL.createObjectURL(variantes[index].archivoImagen) : variantes[index].imagenUrl, 'h-12 w-12 rounded-lg')}</div>
+          <label class="text-[10px] font-bold text-zinc-600">Foto de variante
+            <input type="file" data-variante-imagen="${index}" accept="image/*" capture="environment" class="ml-2 max-w-48 text-[10px]">
+          </label>
+        </div>
       </div>
     `).join('');
+    variantesList.querySelectorAll('[data-variante-imagen]').forEach((input) => {
+      input.onchange = () => {
+        const file = input.files?.[0];
+        const index = Number(input.dataset.varianteImagen);
+        const preview = variantesList.querySelector(`[data-variante-preview="${index}"]`);
+        if (file && preview) {
+          variantes[index].archivoImagen = file;
+          preview.innerHTML = `<img src="${URL.createObjectURL(file)}" alt="Vista previa de la variante" class="h-12 w-12 rounded-lg object-cover">`;
+        }
+      };
+    });
     variantesList.querySelectorAll('[data-variante-delete]').forEach((button) => {
       button.onclick = () => {
         guardarValoresVariantes();
@@ -959,7 +1223,6 @@ function renderProductosCatalogoAdmin() {
       const precioInput = document.getElementById('add-admin-precio');
       const tipoInput = document.getElementById('add-admin-tipo');
       const stockInput = document.getElementById('add-admin-stock');
-      const iconoSelect = document.getElementById('add-admin-icono');
       const esSubmenu = Boolean(document.getElementById('add-admin-es-submenu')?.checked);
       if (!nombreInput || !precioInput || !tipoInput) return;
 
@@ -968,13 +1231,15 @@ function renderProductosCatalogoAdmin() {
       const precio = Number(precioTexto);
       const tipo = tipoInput.value;
       const stockTexto = stockInput?.value.trim() || '';
-      const icono = iconoSelect?.value || '';
+      const imagenPrincipal = imagenPrincipalInput?.files?.[0] || null;
       const variantesGuardadas = esSubmenu
         ? (guardarValoresVariantes(),
           variantes.map((variante) => ({
             nombre: variante.nombre.trim(),
             precio: Number(variante.precio || precio),
-            stock: Number(variante.stock || 0)
+            stock: Number(variante.stock || 0),
+            imagenUrl: variante.imagenUrl || '',
+            archivoImagen: variante.archivoImagen || null
           })))
             .filter((variante) => variante.nombre)
         : [];
@@ -983,17 +1248,32 @@ function renderProductosCatalogoAdmin() {
         : (tipo === 'servicio' ? 0 : Number(stockTexto));
       const camposVariantesValidos = variantesGuardadas.length > 0
         && variantesGuardadas.length === variantes.length
-        && variantes.every((variante) => variante.nombre.trim() && variante.precio !== '' && Number(variante.precio) >= 0 && variante.stock !== '' && Number(variante.stock) >= 0);
+        && variantes.every((variante) => variante.nombre.trim() && variante.precio !== '' && Number(variante.precio) >= 0 && variante.stock !== '' && Number(variante.stock) >= 0 && (variante.imagenUrl || variante.archivoImagen));
       const formularioValido = Boolean(nombre)
-        && Boolean(icono)
+        && Boolean(imagenPrincipal)
         && (esSubmenu ? camposVariantesValidos : Boolean(precioTexto) && precio >= 0 && (tipo === 'servicio' || (Boolean(stockTexto) && stock >= 0)));
       if (!formularioValido) {
-        mostrarToastAdmin('Completa todos los campos obligatorios y todas las variantes.', 'error');
+        mostrarToastAdmin('Completa los campos obligatorios y agrega una fotografía para el artículo y cada variante.', 'error');
         return;
       }
 
       try {
-        await addDoc(collection(db, 'productos'), { nombre, precio, tipo, stock, icono, esSubmenu, variantes: variantesGuardadas });
+        const imagenUrl = await subirImagenProducto(imagenPrincipal, 'productos');
+        const variantesConImagen = await Promise.all(variantesGuardadas.map(async ({ archivoImagen, ...variante }) => ({
+          ...variante,
+          imagenUrl: archivoImagen
+            ? await subirImagenProducto(archivoImagen, 'productos/variantes')
+            : variante.imagenUrl
+        })));
+        await addDoc(collection(db, 'productos'), {
+          nombre,
+          precio,
+          tipo,
+          stock,
+          imagenUrl,
+          esSubmenu,
+          variantes: variantesConImagen
+        });
         if (formWrapper) formWrapper.classList.add('hidden');
         mostrarToastAdmin(`Producto guardado: ${nombre}`, 'success');
       } catch (error) {
@@ -1009,17 +1289,23 @@ function renderProductosCatalogoAdmin() {
       if (!id) return;
       const inputPrecio = tabla.querySelector(`input[data-precio-id="${id}"]`);
       const inputStock = tabla.querySelector(`input[data-stock-id="${id}"]`);
-      const inputIcono = tabla.querySelector(`select[data-icon-id="${id}"]`);
+      const inputImagen = tabla.querySelector(`input[data-imagen-id="${id}"]`);
       const producto = productosVentaRapidaAdmin.find((item) => item.id === id);
-      if (!inputPrecio || !producto) return;
+      if (!producto) return;
 
-      const updateData = { precio: Number(inputPrecio.value) };
+      const precio = inputPrecio ? Number(inputPrecio.value) : Number(producto.precio || 0);
+      if (!Number.isFinite(precio) || precio < 0) {
+        mostrarToastAdmin('Ingresa un precio válido.', 'error');
+        return;
+      }
+      const updateData = { precio };
       if (producto.tipo !== 'servicio' && inputStock) {
         updateData.stock = Number(inputStock.value);
       }
-      if (inputIcono) updateData.icono = inputIcono.value;
 
       try {
+        const file = inputImagen?.files?.[0];
+        if (file) updateData.imagenUrl = await subirImagenProducto(file, `productos/${id}`);
         await updateDoc(doc(db, 'productos', id), updateData);
         mostrarToastAdmin('Cambios guardados', 'success');
       } catch (error) {
@@ -1050,7 +1336,7 @@ function cargarPantallaSeguridad() {
   if (!contenedorPantallas) return;
 
   contenedorPantallas.innerHTML = `
-    <div class="grid grid-cols-2 gap-6 select-none">
+    <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
       <div class="space-y-4">
         <div>
           <h2 class="text-2xl font-black">Actualizar contraseña</h2>
@@ -1078,11 +1364,33 @@ function cargarPantallaSeguridad() {
           </div>
           <div>
             <label class="block text-[10px] font-bold text-zinc-400">Respuesta</label>
-            <input type="text" id="seg-respuesta-input" class="w-full border rounded-xl p-2 text-xs outline-none focus:border-red-500">
+            <input type="text" id="seg-respuesta-input" autocomplete="off" class="w-full border rounded-xl p-2 text-xs outline-none focus:border-red-500">
+          </div>
+          <div class="rounded-xl bg-zinc-50 p-3 text-xs">
+            <p class="font-bold text-zinc-500">Pregunta actual</p>
+            <p id="seg-pregunta-actual" class="mt-1 text-zinc-800">Sin configurar</p>
+            <div class="mt-2 flex items-center justify-between gap-2">
+              <span class="font-bold text-zinc-500">Respuesta guardada</span>
+              <button type="button" id="btn-seguridad-revelar" class="text-zinc-600 hover:text-zinc-900" aria-label="Mostrar respuesta" title="Mostrar u ocultar respuesta">
+                <span class="material-symbols-outlined text-lg">visibility</span>
+              </button>
+            </div>
+            <p id="seg-respuesta-actual" class="mt-1 break-all font-mono text-zinc-800">No configurada</p>
           </div>
           <button type="button" id="btn-guardar-pregunta" class="w-full py-2 bg-zinc-900 text-white font-bold text-xs rounded-xl shadow-md">Guardar Pregunta de Seguridad</button>
         </form>
       </div>
+
+      <section class="space-y-4">
+        <div>
+          <h3 class="text-lg font-bold">Autenticación en dos pasos</h3>
+          <p class="text-zinc-500 text-xs">Requiere un código temporal de Google Authenticator o Microsoft Authenticator al recuperar la contraseña.</p>
+        </div>
+        <div class="rounded-3xl border bg-white p-5 shadow-sm">
+          <div id="estado-2fa" class="text-sm text-zinc-600">Cargando configuración…</div>
+          <div id="acciones-2fa" class="mt-4"></div>
+        </div>
+      </section>
     </div>
   `;
 
@@ -1097,14 +1405,11 @@ function cargarPantallaSeguridad() {
       return;
     }
     try {
-      // guardar contraseña y mantener campo nacimiento si existe
-      const current = await getDoc(refCredenciales);
-      const nacimiento = current.exists() ? (current.data().nacimiento || '2026-01-01') : (datosSeguridadLocal?.nacimiento || '2026-01-01');
-      await setDoc(
-        doc(db, 'configuracion', 'credenciales'),
-        { password: np, nacimiento: nacimiento, ultimaActualizacion: new Date().toISOString() },
-        { merge: true }
-      );
+      await setDoc(refCredenciales, {
+        password: np,
+        ultimaActualizacion: new Date().toISOString()
+      }, { merge: true });
+      datosSeguridadLocal = { ...datosSeguridadLocal, password: np };
       mostrarToastAdmin('Contraseña modificada con éxito.', 'success');
       form.reset();
     } catch (error) {
@@ -1113,18 +1418,170 @@ function cargarPantallaSeguridad() {
     }
   };
 
-  // cargar valores actuales para la pregunta de seguridad si existen
+  const preguntaSelect = document.getElementById('seg-pregunta-select');
+  const respuestaInput = document.getElementById('seg-respuesta-input');
+  const renderizarTipoRespuesta = () => {
+    if (!preguntaSelect || !respuestaInput) return;
+    const esFecha = preguntaSelect.value === 'cumpleanios';
+    respuestaInput.type = esFecha ? 'date' : 'text';
+    respuestaInput.placeholder = esFecha ? '' : 'Escribe tu respuesta';
+    respuestaInput.autocomplete = 'off';
+  };
+  preguntaSelect?.addEventListener('change', renderizarTipoRespuesta);
+  renderizarTipoRespuesta();
+
+  let respuestaRevelada = false;
+  const actualizarResumenPregunta = (datos) => {
+    const preguntaActual = document.getElementById('seg-pregunta-actual');
+    const respuestaActual = document.getElementById('seg-respuesta-actual');
+    const revealButton = document.getElementById('btn-seguridad-revelar');
+    const preguntaId = datos?.seguridadPreguntaId || (datos?.nacimiento ? 'cumpleanios' : '');
+    const respuesta = datos?.seguridadRespuesta || datos?.nacimiento;
+    if (preguntaActual) preguntaActual.textContent = preguntaId ? obtenerPreguntaSeguridad(preguntaId) : 'Sin configurar';
+    if (respuestaActual) {
+      respuestaActual.textContent = respuesta
+        ? (respuestaRevelada ? respuesta : '•'.repeat(Math.min(String(respuesta).length, 16)))
+        : 'No configurada';
+    }
+    if (revealButton) {
+      revealButton.disabled = !respuesta;
+      revealButton.innerHTML = `<span class="material-symbols-outlined text-lg">${respuestaRevelada ? 'visibility_off' : 'visibility'}</span>`;
+      revealButton.setAttribute('aria-label', respuestaRevelada ? 'Ocultar respuesta' : 'Mostrar respuesta');
+    }
+  };
+  document.getElementById('btn-seguridad-revelar')?.addEventListener('click', () => {
+    respuestaRevelada = !respuestaRevelada;
+    actualizarResumenPregunta(datosSeguridadLocal);
+  });
+
+  const estado2FA = document.getElementById('estado-2fa');
+  const acciones2FA = document.getElementById('acciones-2fa');
+  const renderizarEstado2FA = () => {
+    if (!estado2FA || !acciones2FA) return;
+    const habilitado = datosSeguridadLocal?.autenticacion2FA === true && Boolean(datosSeguridadLocal?.totpSecret);
+    estado2FA.innerHTML = habilitado
+      ? '<span class="font-bold text-emerald-700">2FA habilitado</span><p class="mt-1 text-xs text-zinc-500">Se solicitará un código al recuperar la contraseña.</p>'
+      : '<span class="font-bold text-zinc-800">2FA deshabilitado</span><p class="mt-1 text-xs text-zinc-500">Puedes vincular una app Authenticator para proteger la recuperación.</p>';
+    acciones2FA.innerHTML = habilitado
+      ? '<button type="button" id="btn-desactivar-2fa" class="rounded-xl bg-red-50 px-4 py-2 text-xs font-bold text-red-700">Deshabilitar 2FA</button>'
+      : '<button type="button" id="btn-activar-2fa" class="rounded-xl bg-zinc-900 px-4 py-2 text-xs font-bold text-white">Habilitar 2FA con Google Authenticator</button>';
+    document.getElementById('btn-activar-2fa')?.addEventListener('click', activar2FA);
+    document.getElementById('btn-desactivar-2fa')?.addEventListener('click', desactivar2FA);
+  };
+
+  async function activar2FA() {
+    try {
+      const secret = new OTPAuth.Secret({ size: 20 });
+      const totp = crearTOTP(secret);
+      const qrDataUrl = await QRCode.toDataURL(totp.toString(), { width: 220, margin: 2 });
+      const overlay = document.createElement('div');
+      overlay.className = 'fixed inset-0 z-[70] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4';
+      overlay.innerHTML = `
+        <form class="w-full max-w-sm space-y-4 rounded-3xl bg-white p-6 shadow-2xl" role="dialog" aria-modal="true">
+          <div>
+            <h3 class="text-lg font-black text-zinc-900">Configurar 2FA</h3>
+            <p class="mt-1 text-sm text-zinc-600">Escanea el código con Google Authenticator o Microsoft Authenticator.</p>
+          </div>
+          <img src="${qrDataUrl}" alt="Código QR de configuración TOTP" class="mx-auto h-56 w-56">
+          <div class="rounded-xl bg-zinc-100 p-3 text-center">
+            <p class="text-[10px] font-bold uppercase text-zinc-500">Clave manual</p>
+            <code class="break-all text-sm font-bold text-zinc-900">${escaparHtml(secret.base32)}</code>
+          </div>
+          <label class="block text-xs font-bold text-zinc-600">Código de verificación
+            <input data-setup-totp type="text" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" autocomplete="one-time-code" placeholder="000000" class="mt-1 w-full rounded-xl border border-zinc-200 px-3 py-2 text-center font-mono text-lg tracking-[0.3em] outline-none focus:border-red-500">
+          </label>
+          <p data-setup-status class="hidden text-center text-xs font-semibold"></p>
+          <div class="flex gap-3">
+            <button type="button" data-setup-cancel class="flex-1 rounded-xl bg-zinc-200 px-4 py-2.5 text-sm font-bold text-zinc-800">Cancelar</button>
+            <button type="submit" class="flex-1 rounded-xl bg-[#D32F2F] px-4 py-2.5 text-sm font-bold text-white">Confirmar y activar</button>
+          </div>
+        </form>`;
+      document.body.appendChild(overlay);
+      const input = overlay.querySelector('[data-setup-totp]');
+      const status = overlay.querySelector('[data-setup-status]');
+      const formSetup = overlay.querySelector('form');
+      const close = () => {
+        document.removeEventListener('keydown', onKeydown);
+        overlay.remove();
+      };
+      const onKeydown = (event) => {
+        if (event.key === 'Escape') close();
+      };
+      input.focus();
+      input.addEventListener('input', () => {
+        const valid = /^\d{6}$/.test(input.value) && totp.validate({ token: input.value, window: 1 }) !== null;
+        status.textContent = input.value.length < 6 ? '' : (valid ? 'Código válido.' : 'Código no válido o expirado.');
+        status.classList.toggle('hidden', input.value.length < 6);
+        status.classList.toggle('text-emerald-600', valid);
+        status.classList.toggle('text-red-600', !valid && input.value.length >= 6);
+      });
+      overlay.querySelector('[data-setup-cancel]').onclick = close;
+      overlay.addEventListener('click', (event) => {
+        if (event.target === overlay) close();
+      });
+      formSetup.onsubmit = async (event) => {
+        event.preventDefault();
+        if (totp.validate({ token: input.value.trim(), window: 1 }) === null) {
+          status.textContent = 'Ingresa un código actual válido de 6 dígitos.';
+          status.classList.remove('hidden', 'text-emerald-600');
+          status.classList.add('text-red-600');
+          return;
+        }
+        try {
+          await setDoc(refCredenciales, {
+            autenticacion2FA: true,
+            totpSecret: secret.base32,
+            ultimaActualizacion: new Date().toISOString()
+          }, { merge: true });
+          datosSeguridadLocal = { ...datosSeguridadLocal, autenticacion2FA: true, totpSecret: secret.base32 };
+          close();
+          renderizarEstado2FA();
+          mostrarToastAdmin('Autenticación en dos pasos habilitada.', 'success');
+        } catch (error) {
+          console.error(error);
+          status.textContent = MENSAJE_ERROR_ADMIN;
+          status.classList.remove('hidden', 'text-emerald-600');
+          status.classList.add('text-red-600');
+        }
+      };
+      document.addEventListener('keydown', onKeydown);
+    } catch (error) {
+      console.error('Error configurando TOTP:', error);
+      mostrarToastAdmin(MENSAJE_ERROR_ADMIN, 'error');
+    }
+  }
+
+  async function desactivar2FA() {
+    if (!(await confirmarAdmin('¿Deseas deshabilitar la autenticación en dos pasos?'))) return;
+    try {
+      await updateDoc(refCredenciales, {
+        autenticacion2FA: false,
+        totpSecret: deleteField(),
+        ultimaActualizacion: new Date().toISOString()
+      });
+      const { totpSecret: _secret, ...resto } = datosSeguridadLocal || {};
+      datosSeguridadLocal = { ...resto, autenticacion2FA: false };
+      renderizarEstado2FA();
+      mostrarToastAdmin('Autenticación en dos pasos deshabilitada.', 'success');
+    } catch (error) {
+      console.error(error);
+      mostrarToastAdmin(MENSAJE_ERROR_ADMIN, 'error');
+    }
+  }
+
   (async () => {
     try {
       const docSnap = await getDoc(refCredenciales);
-      if (!docSnap.exists()) return;
-      const datos = docSnap.data();
+      const datos = docSnap.exists() ? docSnap.data() : {};
+      datosSeguridadLocal = datos;
       const sel = document.getElementById('seg-pregunta-select');
-      const resp = document.getElementById('seg-respuesta-input');
       if (sel && datos.seguridadPreguntaId) sel.value = datos.seguridadPreguntaId;
-      // No rellenar la respuesta por seguridad, dejar en blanco
+      renderizarTipoRespuesta();
+      actualizarResumenPregunta(datos);
+      renderizarEstado2FA();
     } catch (error) {
       console.error(error);
+      mostrarToastAdmin(MENSAJE_ERROR_ADMIN, 'error');
     }
   })();
 
@@ -1132,19 +1589,25 @@ function cargarPantallaSeguridad() {
   if (btnGuardarPregunta) {
     btnGuardarPregunta.onclick = async () => {
       const preguntaId = document.getElementById('seg-pregunta-select')?.value;
-      const respuesta = document.getElementById('seg-respuesta-input')?.value?.trim();
+      const respuestaOriginal = document.getElementById('seg-respuesta-input')?.value || '';
+      const respuesta = preguntaId === 'cumpleanios'
+        ? respuestaOriginal.trim()
+        : normalizarRespuestaSeguridad(respuestaOriginal);
       if (!preguntaId || !respuesta) {
         mostrarToastAdmin('Seleccione pregunta y escriba la respuesta', 'error');
         return;
       }
       try {
         await setDoc(
-          doc(db, 'configuracion', 'credenciales'),
+          refCredenciales,
           { seguridadPreguntaId: preguntaId, seguridadRespuesta: respuesta, ultimaActualizacion: new Date().toISOString() },
           { merge: true }
         );
+        datosSeguridadLocal = { ...datosSeguridadLocal, seguridadPreguntaId: preguntaId, seguridadRespuesta: respuesta };
+        respuestaRevelada = false;
+        actualizarResumenPregunta(datosSeguridadLocal);
         mostrarToastAdmin('Pregunta de seguridad guardada.', 'success');
-        document.getElementById('seg-respuesta-input').value = '';
+        respuestaInput.value = '';
       } catch (error) {
         console.error(error);
         mostrarToastAdmin(MENSAJE_ERROR_ADMIN, 'error');

@@ -2,6 +2,7 @@
 import { db } from './firebase.js';
 import { collection, addDoc, onSnapshot, query, where, doc, setDoc, getDoc, deleteDoc, updateDoc } from 'firebase/firestore';
 import { registerSW } from 'virtual:pwa-register';
+import { escaparHtml, miniaturaImagenHTML } from './product-images.js';
 import './admin.js';
 
 registerSW({ immediate: true });
@@ -44,8 +45,6 @@ let configuracionRuleta = [
 
 const listaEmojisDisponibles = ["💪", "🔥", "⚡", "🍫", "🏆", "🥤", "🍏", "🏋️‍♂️", "🥊", "🎟️", "💰", "✨"];
 const coloresGymVibrantes = ["#FF0000", "#111111", "#B80000", "#2A2A30", "#52525b", "#990000", "#7f1d1d"];
-const esEmoji = (texto) => typeof texto === 'string' && /\p{Extended_Pictographic}/u.test(texto);
-
 let desuscribirVentas = null;
 let desuscribirClientes = null;
 let desuscribirHistorialMesa = null;
@@ -564,17 +563,16 @@ function renderizarBotonesPOS() {
     return !(nombre === 'entrada' || nombre.includes('entrada')) && (!termino || nombre.includes(termino));
   });
   grid.innerHTML = listaItems.map(prod => {
-    const iconoClass = esEmoji(prod.icono) ? '' : 'material-symbols-outlined';
     const esServicio = prod.tipo === 'servicio';
     const stockTotal = esServicio ? 0 : obtenerStockDisponibleProducto(prod);
     const agotado = !esServicio && stockTotal <= 0;
     const stockBajo = !esServicio && stockTotal > 0 && stockTotal <= 3;
     return `
       <button data-id="${prod.id}" ${agotado ? 'disabled' : ''} class="btn-producto-pos w-full min-h-[140px] flex flex-col items-center justify-center p-4 bg-white border border-zinc-200 rounded-3xl hover:border-[#D32F2F] transition-all transform active:scale-95 group shadow-sm disabled:opacity-40 disabled:bg-zinc-100 disabled:border-zinc-200 disabled:pointer-events-none">
-        <div class="w-12 h-12 bg-zinc-100 group-hover:bg-red-50 rounded-2xl flex items-center justify-center text-zinc-700 group-hover:text-[#D32F2F] transition mb-2">
-          <span class="${iconoClass} text-xl">${prod.icono || 'box'}</span>
+        <div class="mb-2 overflow-hidden rounded-2xl">
+          ${miniaturaImagenHTML(prod.imagenUrl, 'h-14 w-14 rounded-2xl')}
         </div>
-        <span class="font-bold text-zinc-800 text-xs text-center truncate w-full">${prod.nombre}</span>
+        <span class="font-bold text-zinc-800 text-xs text-center truncate w-full">${escaparHtml(prod.nombre)}</span>
         <span class="text-[10px] font-semibold ${agotado ? 'text-red-500 font-bold' : stockBajo ? 'text-red-500 font-bold' : 'text-zinc-400'} mb-1.5">${esServicio ? 'Ilimitado 🎫' : (agotado ? 'Sin stock' : stockBajo ? `Stock bajo: ${stockTotal}` : `Stock: ${stockTotal}`)}</span>
         ${prod.esSubmenu ? '<span class="text-xl font-black text-zinc-900" aria-label="Abrir variantes">&gt;</span>' : `<span class="text-[11px] px-2.5 py-0.5 bg-zinc-900 text-white rounded-full font-bold">$${prod.precio}</span>`}
       </button>
@@ -613,9 +611,10 @@ function abrirModalVariantes(producto) {
           const agotado = stockDisponible <= 0;
           const stockBajo = stockDisponible > 0 && stockDisponible <= 3;
           return `
-            <button type="button" data-variante-index="${index}" ${agotado ? 'disabled' : ''} class="flex w-full items-center justify-between rounded-2xl border border-zinc-200 px-4 py-3 text-left hover:border-red-500 disabled:opacity-50 disabled:cursor-not-allowed">
-              <div class="flex flex-col">
-                <span class="font-bold text-zinc-800">${variante.nombre}</span>
+            <button type="button" data-variante-index="${index}" ${agotado ? 'disabled' : ''} class="flex w-full items-center gap-3 rounded-2xl border border-zinc-200 px-3 py-3 text-left hover:border-red-500 disabled:opacity-50 disabled:cursor-not-allowed">
+              ${miniaturaImagenHTML(variante.imagenUrl, 'h-12 w-12 shrink-0 rounded-xl')}
+              <div class="flex min-w-0 flex-1 flex-col">
+                <span class="truncate font-bold text-zinc-800">${escaparHtml(variante.nombre)}</span>
                 <span class="text-[10px] ${agotado ? 'text-red-500 font-bold' : stockBajo ? 'text-red-500 font-bold' : 'text-zinc-500'}">${agotado ? 'Sin stock' : stockBajo ? `Stock bajo: ${stockDisponible}` : `Stock: ${stockDisponible}`}</span>
               </div>
               <span class="text-xs font-black">$${Number(variante.precio ?? producto.precio).toFixed(2)}</span>
@@ -1513,7 +1512,7 @@ try {
         nombre: 'Caminadora',
         precio: Number(data.caminadora),
         tipo: 'servicio',
-        icono: data.caminadoraIcono || '🏃'
+        imagenUrl: data.caminadoraImagenUrl || ''
       });
     }
     if (data.visita !== undefined) {
@@ -1522,7 +1521,7 @@ try {
         nombre: 'Visita',
         precio: Number(data.visita),
         tipo: 'servicio',
-        icono: data.visitaIcono || '🎟️'
+        imagenUrl: data.visitaImagenUrl || ''
       });
     }
     if (data.membresia) {
