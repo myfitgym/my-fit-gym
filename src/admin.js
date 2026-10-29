@@ -1,6 +1,11 @@
 import { db } from './firebase.js';
 import { collection, onSnapshot, doc, setDoc, deleteDoc, getDoc, updateDoc, addDoc, writeBatch, deleteField } from 'firebase/firestore';
-import { escaparHtml, miniaturaImagenHTML, subirImagenProducto } from './product-images.js';
+import {
+  escaparHtml,
+  miniaturaImagenHTML,
+  comprimirImagenProducto,
+  validarTamanoFotosProducto
+} from './product-images.js';
 import * as OTPAuth from 'otpauth';
 import QRCode from 'qrcode';
 
@@ -34,6 +39,19 @@ let pendingAdminAction = null;
 let pendingAdminButton = null;
 const refServiciosPrecios = doc(db, 'configuracion', 'preciosServicios');
 const MENSAJE_ERROR_ADMIN = 'Error al procesar la solicitud. Verifica tu conexión e intenta de nuevo.';
+
+function mensajeErrorProducto(error) {
+  switch (error?.code) {
+    case 'image/too-large':
+      return error.message;
+    case 'image/product-too-large':
+      return error.message;
+    case 'unavailable':
+      return 'Firestore no está disponible. Verifica tu conexión e intenta de nuevo.';
+    default:
+      return MENSAJE_ERROR_ADMIN;
+  }
+}
 
 function mostrarToastAdmin(texto, variante = 'info') {
   if (window.mostrarSnackbarMensaje) window.mostrarSnackbarMensaje(texto, variante, 3000);
@@ -779,7 +797,7 @@ function cargarPantallaRoles() {
       <div id="wrapper-form-add-producto" class="hidden bg-white border p-4 rounded-3xl space-y-3 shadow-sm">
         <div class="grid grid-cols-1 sm:grid-cols-4 gap-3">
             <div class="sm:col-span-2"><label class="block text-[10px] font-bold text-zinc-400 uppercase mb-1">Nombre</label><input type="text" id="add-admin-nombre" class="w-full px-3 py-2 bg-zinc-50 border rounded-xl text-xs outline-none" /></div>
-            <div>
+            <div id="wrapper-add-imagen">
               <label class="block text-[10px] font-bold text-zinc-400 uppercase mb-1">Fotografía</label>
               <input type="file" id="add-admin-imagen" accept="image/*" capture="environment" class="w-full px-3 py-2 bg-zinc-50 border rounded-xl text-xs outline-none" />
               <div id="preview-add-admin-imagen" class="mt-2"></div>
@@ -819,7 +837,7 @@ function cargarPantallaRoles() {
           </div>
           <table class="w-full text-left text-xs">
             <thead>
-              <tr class="text-zinc-400 border-b"><th class="pb-2">Servicio</th><th class="pb-2">Precio</th><th class="pb-2">Foto</th><th class="pb-2 text-right">Acción</th></tr>
+              <tr class="text-zinc-400 border-b"><th class="pb-2">Servicio</th><th class="pb-2">Precio</th><th class="pb-2 text-right">Acción</th></tr>
             </thead>
             <tbody id="tabla-servicios-admin"></tbody>
           </table>
@@ -876,45 +894,26 @@ function renderServiciosAdmin() {
   });
 
   if (serviciosFiltrados.length === 0) {
-    tabla.innerHTML = `<tr><td colspan="4" class="py-4 text-center text-zinc-400 italic">Sin resultados para esta búsqueda.</td></tr>`;
+    tabla.innerHTML = `<tr><td colspan="3" class="py-4 text-center text-zinc-400 italic">Sin resultados para esta búsqueda.</td></tr>`;
     return;
   }
 
   tabla.innerHTML = serviciosFiltrados
     .map((servicio) => {
-      const imageField = `${servicio.id}ImagenUrl`;
-      const preview = miniaturaImagenHTML(preciosServiciosLocal[imageField], 'h-10 w-10 rounded-full');
       return `
       <tr class="border-b hover:bg-zinc-50">
         <td class="py-3 font-bold text-zinc-800">${servicio.label}</td>
         <td class="py-3 text-center"><input type="number" data-precio-id="${servicio.id}" value="${preciosServiciosLocal[servicio.id] ?? 0}" class="w-32 border rounded-lg p-1 text-center font-bold bg-zinc-50 text-xs" /></td>
-        <td class="py-3 text-center">
-          <div class="flex flex-col items-center gap-1">
-            <div data-servicio-preview="${servicio.id}">${preview}</div>
-            <input type="file" accept="image/*" capture="environment" data-servicio-imagen="${servicio.id}" class="w-36 text-[9px]" aria-label="Foto de ${servicio.label}">
-          </div>
-        </td>
         <td class="py-3 text-right"><button type="button" data-id="${servicio.id}" class="btn-servicio-save bg-zinc-900 text-white px-2.5 py-1 rounded-xl text-[11px] font-bold">Guardar</button></td>
       </tr>
     `;
     })
     .join('');
 
-  tabla.querySelectorAll('input[data-servicio-imagen]').forEach((input) => {
-    input.onchange = () => {
-      const file = input.files?.[0];
-      const preview = tabla.querySelector(`[data-servicio-preview="${input.dataset.servicioImagen}"]`);
-      if (file && preview) {
-        preview.innerHTML = `<img src="${URL.createObjectURL(file)}" alt="" class="h-10 w-10 rounded-full object-cover">`;
-      }
-    };
-  });
-
   tabla.querySelectorAll('.btn-servicio-save').forEach((btn) => {
     btn.onclick = async () => {
       const id = btn.getAttribute('data-id');
       const input = tabla.querySelector(`input[data-precio-id="${id}"]`);
-      const inputImagen = tabla.querySelector(`input[data-servicio-imagen="${id}"]`);
       if (!id || !input) return;
       const precio = Number(input.value);
       if (!Number.isFinite(precio) || precio < 0) {
@@ -924,15 +923,16 @@ function renderServiciosAdmin() {
 
       try {
         const payload = { [id]: precio };
-        const file = inputImagen?.files?.[0];
-        if (file) payload[`${id}ImagenUrl`] = await subirImagenProducto(file, `servicios/${id}`);
-        await setDoc(refServiciosPrecios, payload, { merge: true });
+        await setDoc(refServiciosPrecios, {
+          ...payload,
+          [`${id}ImagenUrl`]: deleteField()
+        }, { merge: true });
         preciosServiciosLocal = { ...preciosServiciosLocal, ...payload };
         renderServiciosAdmin();
-        mostrarToastAdmin('Precio de servicio guardado.', 'success');
+        mostrarToastAdmin('Precio de servicio guardado (sin foto).', 'success');
       } catch (error) {
         console.error(error);
-        mostrarToastAdmin(MENSAJE_ERROR_ADMIN, 'error');
+        mostrarToastAdmin(mensajeErrorProducto(error), 'error');
       }
     };
   });
@@ -966,8 +966,12 @@ function renderProductosCatalogoAdmin() {
         <td class="py-3 text-center"><input type="number" value="${p.stock ?? 0}" data-stock-id="${p.id}" class="w-16 border rounded-lg p-1 text-center font-bold bg-zinc-50 text-xs" /></td>
         <td class="py-3 text-center">
           <div class="flex flex-col items-center gap-1">
-            <div data-producto-preview="${escaparHtml(p.id)}">${miniaturaImagenHTML(p.imagenUrl, 'h-10 w-10 rounded-lg')}</div>
-            <input type="file" accept="image/*" capture="environment" data-imagen-id="${escaparHtml(p.id)}" class="w-32 text-[9px]" aria-label="Foto de ${escaparHtml(p.nombre)}">
+            <div data-producto-preview="${escaparHtml(p.id)}">${p.esSubmenu
+              ? miniaturaImagenHTML('', 'h-10 w-10 rounded-lg')
+              : miniaturaImagenHTML(p.imagenUrl, 'h-10 w-10 rounded-lg')}</div>
+            ${p.esSubmenu
+              ? '<span class="text-[9px] text-zinc-500">Fotos por variante</span>'
+              : `<input type="file" accept="image/*" capture="environment" data-imagen-id="${escaparHtml(p.id)}" class="w-32 text-[9px]" aria-label="Foto de ${escaparHtml(p.nombre)}">`}
           </div>
         </td>
         <td class="py-3 text-right">
@@ -1106,21 +1110,25 @@ function renderProductosCatalogoAdmin() {
           const variantesConImagen = await Promise.all(datosValidos.map(async ({ archivoImagen, ...variante }) => ({
             ...variante,
             imagenUrl: archivoImagen
-              ? await subirImagenProducto(archivoImagen, `productos/${producto.id}/variantes`)
+              ? await comprimirImagenProducto(archivoImagen)
               : variante.imagenUrl
           })));
+          validarTamanoFotosProducto({ imagenUrl: '', variantes: variantesConImagen });
           await updateDoc(doc(db, 'productos', producto.id), {
             esSubmenu: true,
+            imagenUrl: '',
             variantes: variantesConImagen,
             stock: stockTotal,
             precio: Number(datosValidos[0].precio || producto.precio || 0)
           });
           overlay.remove();
           renderProductosCatalogoAdmin();
-          mostrarToastAdmin('Variantes actualizadas.', 'success');
+          mostrarToastAdmin(datosValidos.some((variante) => variante.archivoImagen)
+            ? 'Variantes y fotos comprimidas guardadas.'
+            : 'Variantes actualizadas.', 'success');
         } catch (error) {
           console.error(error);
-          mostrarToastAdmin(MENSAJE_ERROR_ADMIN, 'error');
+          mostrarToastAdmin(mensajeErrorProducto(error), 'error');
         }
       };
     };
@@ -1144,8 +1152,30 @@ function renderProductosCatalogoAdmin() {
   const submenuCheck = document.getElementById('add-admin-es-submenu');
   const variantesWrapper = document.getElementById('wrapper-add-variantes');
   const variantesList = document.getElementById('lista-add-variantes');
+  const tipoProductoInput = document.getElementById('add-admin-tipo');
   const variantes = [];
   const imagenPrincipalInput = document.getElementById('add-admin-imagen');
+  const actualizarVisibilidadFotografias = () => {
+    const esServicio = tipoProductoInput?.value === 'servicio';
+    const esSubmenu = Boolean(submenuCheck?.checked);
+    document.getElementById('wrapper-add-imagen')?.classList.toggle('hidden', esServicio || esSubmenu);
+    if (esServicio || esSubmenu) {
+      if (imagenPrincipalInput) imagenPrincipalInput.value = '';
+      const preview = document.getElementById('preview-add-admin-imagen');
+      if (preview) preview.innerHTML = '';
+    }
+  };
+  tipoProductoInput?.addEventListener('change', () => {
+    const esServicio = tipoProductoInput.value === 'servicio';
+    actualizarVisibilidadFotografias();
+    if (esServicio) {
+      variantes.forEach((variante) => {
+        variante.archivoImagen = null;
+        variante.imagenUrl = '';
+      });
+    }
+    renderVariantes();
+  });
   imagenPrincipalInput?.addEventListener('change', () => {
     const file = imagenPrincipalInput.files?.[0];
     const preview = document.getElementById('preview-add-admin-imagen');
@@ -1167,18 +1197,19 @@ function renderProductosCatalogoAdmin() {
   };
   const renderVariantes = () => {
     if (!variantesList) return;
+    const esServicio = tipoProductoInput?.value === 'servicio';
     variantesList.innerHTML = variantes.map((_, index) => `
       <div class="grid grid-cols-1 sm:grid-cols-[1fr_6rem_6rem_auto] gap-2 items-center rounded-xl border border-zinc-200 bg-white p-2">
         <input type="text" data-variante-nombre="${index}" value="${escaparHtml(variantes[index].nombre || '')}" placeholder="Ej. Fresa" class="w-full rounded-xl border border-zinc-200 bg-white px-2 py-1.5 text-xs">
         <input type="number" data-variante-precio="${index}" value="${variantes[index].precio || ''}" min="0" placeholder="Precio" class="w-full rounded-xl border border-zinc-200 bg-white px-2 py-1.5 text-xs">
         <input type="number" data-variante-stock="${index}" value="${variantes[index].stock || ''}" min="0" placeholder="Stock" class="w-full rounded-xl border border-zinc-200 bg-white px-2 py-1.5 text-xs">
         <button type="button" data-variante-delete="${index}" class="rounded-xl bg-red-50 px-2 py-1.5 text-[10px] font-bold text-red-600">Quitar</button>
-        <div class="col-span-full flex items-center gap-3">
+        ${esServicio ? '' : `<div class="col-span-full flex items-center gap-3">
           <div data-variante-preview="${index}">${miniaturaImagenHTML(variantes[index].archivoImagen ? URL.createObjectURL(variantes[index].archivoImagen) : variantes[index].imagenUrl, 'h-12 w-12 rounded-lg')}</div>
           <label class="text-[10px] font-bold text-zinc-600">Foto de variante
             <input type="file" data-variante-imagen="${index}" accept="image/*" capture="environment" class="ml-2 max-w-48 text-[10px]">
           </label>
-        </div>
+        </div>`}
       </div>
     `).join('');
     variantesList.querySelectorAll('[data-variante-imagen]').forEach((input) => {
@@ -1205,6 +1236,7 @@ function renderProductosCatalogoAdmin() {
       variantesWrapper?.classList.toggle('hidden', !submenuCheck.checked);
       document.getElementById('wrapper-add-precio')?.classList.toggle('hidden', submenuCheck.checked);
       document.getElementById('wrapper-add-stock-field')?.classList.toggle('hidden', submenuCheck.checked);
+      actualizarVisibilidadFotografias();
       if (submenuCheck.checked && variantes.length === 0) {
         variantes.push({});
         renderVariantes();
@@ -1246,26 +1278,40 @@ function renderProductosCatalogoAdmin() {
       const stock = esSubmenu
         ? variantesGuardadas.reduce((total, variante) => total + variante.stock, 0)
         : (tipo === 'servicio' ? 0 : Number(stockTexto));
+      const requiereFotoGeneral = tipo !== 'servicio' && !esSubmenu;
+      const tipoEsValido = tipo === 'producto' || tipo === 'servicio';
       const camposVariantesValidos = variantesGuardadas.length > 0
         && variantesGuardadas.length === variantes.length
-        && variantes.every((variante) => variante.nombre.trim() && variante.precio !== '' && Number(variante.precio) >= 0 && variante.stock !== '' && Number(variante.stock) >= 0 && (variante.imagenUrl || variante.archivoImagen));
+        && variantes.every((variante) => variante.nombre.trim() && variante.precio !== '' && Number(variante.precio) >= 0 && variante.stock !== '' && Number(variante.stock) >= 0 && (tipo === 'servicio' || variante.imagenUrl || variante.archivoImagen));
       const formularioValido = Boolean(nombre)
-        && Boolean(imagenPrincipal)
+        && tipoEsValido
+        && (!requiereFotoGeneral || Boolean(imagenPrincipal))
         && (esSubmenu ? camposVariantesValidos : Boolean(precioTexto) && precio >= 0 && (tipo === 'servicio' || (Boolean(stockTexto) && stock >= 0)));
       if (!formularioValido) {
-        mostrarToastAdmin('Completa los campos obligatorios y agrega una fotografía para el artículo y cada variante.', 'error');
+        mostrarToastAdmin(tipo === 'servicio'
+          ? 'Completa los campos obligatorios del servicio.'
+          : 'Completa los campos obligatorios y agrega una fotografía para el producto y cada variante.', 'error');
         return;
       }
 
+      const textoBotonGuardar = btnGuardarAdd.textContent;
+      btnGuardarAdd.disabled = true;
+      btnGuardarAdd.textContent = requiereFotoGeneral || variantesGuardadas.some((variante) => variante.archivoImagen)
+        ? 'Comprimiendo fotos…'
+        : 'Guardando…';
       try {
-        const imagenUrl = await subirImagenProducto(imagenPrincipal, 'productos');
+        const imagenUrl = requiereFotoGeneral
+          ? await comprimirImagenProducto(imagenPrincipal)
+          : '';
         const variantesConImagen = await Promise.all(variantesGuardadas.map(async ({ archivoImagen, ...variante }) => ({
           ...variante,
-          imagenUrl: archivoImagen
-            ? await subirImagenProducto(archivoImagen, 'productos/variantes')
+          imagenUrl: tipo === 'servicio'
+            ? ''
+            : archivoImagen
+            ? await comprimirImagenProducto(archivoImagen)
             : variante.imagenUrl
         })));
-        await addDoc(collection(db, 'productos'), {
+        const productoNuevo = {
           nombre,
           precio,
           tipo,
@@ -1273,12 +1319,21 @@ function renderProductosCatalogoAdmin() {
           imagenUrl,
           esSubmenu,
           variantes: variantesConImagen
-        });
+        };
+        validarTamanoFotosProducto(productoNuevo);
+        await addDoc(collection(db, 'productos'), productoNuevo);
         if (formWrapper) formWrapper.classList.add('hidden');
-        mostrarToastAdmin(`Producto guardado: ${nombre}`, 'success');
+        mostrarToastAdmin(tipo === 'servicio'
+          ? `Servicio guardado (sin foto): ${nombre}`
+          : esSubmenu
+          ? `Producto y fotos comprimidas de variantes guardados: ${nombre}`
+          : `Producto y fotografía comprimida guardados: ${nombre}`, 'success');
       } catch (error) {
         console.error(error);
-        mostrarToastAdmin(MENSAJE_ERROR_ADMIN, 'error');
+        mostrarToastAdmin(mensajeErrorProducto(error), 'error');
+      } finally {
+        btnGuardarAdd.disabled = false;
+        btnGuardarAdd.textContent = textoBotonGuardar;
       }
     };
   }
@@ -1305,12 +1360,16 @@ function renderProductosCatalogoAdmin() {
 
       try {
         const file = inputImagen?.files?.[0];
-        if (file) updateData.imagenUrl = await subirImagenProducto(file, `productos/${id}`);
+        if (file) updateData.imagenUrl = await comprimirImagenProducto(file);
+        validarTamanoFotosProducto({
+          imagenUrl: updateData.imagenUrl ?? producto.imagenUrl,
+          variantes: producto.variantes
+        });
         await updateDoc(doc(db, 'productos', id), updateData);
-        mostrarToastAdmin('Cambios guardados', 'success');
+        mostrarToastAdmin(file ? 'Producto y fotografía comprimida guardados.' : 'Cambios guardados', 'success');
       } catch (error) {
         console.error(error);
-        mostrarToastAdmin(MENSAJE_ERROR_ADMIN, 'error');
+        mostrarToastAdmin(mensajeErrorProducto(error), 'error');
       }
     };
   });

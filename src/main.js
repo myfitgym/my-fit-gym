@@ -570,7 +570,9 @@ function renderizarBotonesPOS() {
     return `
       <button data-id="${prod.id}" ${agotado ? 'disabled' : ''} class="btn-producto-pos w-full min-h-[140px] flex flex-col items-center justify-center p-4 bg-white border border-zinc-200 rounded-3xl hover:border-[#D32F2F] transition-all transform active:scale-95 group shadow-sm disabled:opacity-40 disabled:bg-zinc-100 disabled:border-zinc-200 disabled:pointer-events-none">
         <div class="mb-2 overflow-hidden rounded-2xl">
-          ${miniaturaImagenHTML(prod.imagenUrl, 'h-14 w-14 rounded-2xl')}
+          ${esServicio || prod.esSubmenu
+            ? '<span class="material-symbols-outlined flex h-14 w-14 items-center justify-center rounded-2xl bg-zinc-100 text-zinc-500">confirmation_number</span>'
+            : miniaturaImagenHTML(prod.imagenUrl, 'h-14 w-14 rounded-2xl')}
         </div>
         <span class="font-bold text-zinc-800 text-xs text-center truncate w-full">${escaparHtml(prod.nombre)}</span>
         <span class="text-[10px] font-semibold ${agotado ? 'text-red-500 font-bold' : stockBajo ? 'text-red-500 font-bold' : 'text-zinc-400'} mb-1.5">${esServicio ? 'Ilimitado 🎫' : (agotado ? 'Sin stock' : stockBajo ? `Stock bajo: ${stockTotal}` : `Stock: ${stockTotal}`)}</span>
@@ -612,7 +614,9 @@ function abrirModalVariantes(producto) {
           const stockBajo = stockDisponible > 0 && stockDisponible <= 3;
           return `
             <button type="button" data-variante-index="${index}" ${agotado ? 'disabled' : ''} class="flex w-full items-center gap-3 rounded-2xl border border-zinc-200 px-3 py-3 text-left hover:border-red-500 disabled:opacity-50 disabled:cursor-not-allowed">
-              ${miniaturaImagenHTML(variante.imagenUrl, 'h-12 w-12 shrink-0 rounded-xl')}
+              ${producto.tipo === 'servicio'
+                ? '<span class="material-symbols-outlined flex h-12 w-12 shrink-0 items-center justify-center rounded-xl bg-zinc-100 text-zinc-500">confirmation_number</span>'
+                : miniaturaImagenHTML(variante.imagenUrl, 'h-12 w-12 shrink-0 rounded-xl')}
               <div class="flex min-w-0 flex-1 flex-col">
                 <span class="truncate font-bold text-zinc-800">${escaparHtml(variante.nombre)}</span>
                 <span class="text-[10px] ${agotado ? 'text-red-500 font-bold' : stockBajo ? 'text-red-500 font-bold' : 'text-zinc-500'}">${agotado ? 'Sin stock' : stockBajo ? `Stock bajo: ${stockDisponible}` : `Stock: ${stockDisponible}`}</span>
@@ -1511,8 +1515,7 @@ try {
         id: 'caminadora',
         nombre: 'Caminadora',
         precio: Number(data.caminadora),
-        tipo: 'servicio',
-        imagenUrl: data.caminadoraImagenUrl || ''
+        tipo: 'servicio'
       });
     }
     if (data.visita !== undefined) {
@@ -1520,8 +1523,7 @@ try {
         id: 'visita',
         nombre: 'Visita',
         precio: Number(data.visita),
-        tipo: 'servicio',
-        imagenUrl: data.visitaImagenUrl || ''
+        tipo: 'servicio'
       });
     }
     if (data.membresia) {

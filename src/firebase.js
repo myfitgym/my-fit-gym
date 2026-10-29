@@ -1,7 +1,6 @@
 import { initializeApp } from "firebase/app";
 import { getAuth } from "firebase/auth";
 import { getFirestore, enableIndexedDbPersistence } from "firebase/firestore";
-import { getStorage } from "firebase/storage";
 
 // Credenciales oficiales de My Fit Gym Rodeo
 const firebaseConfig = {
@@ -31,4 +30,3 @@ enableIndexedDbPersistence(db).catch((err) => {
 
 // Exportar servicios para usarlos en tus pantallas
 export const auth = getAuth(app);
-export const storage = getStorage(app);
